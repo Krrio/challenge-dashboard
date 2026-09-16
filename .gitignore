@@ -1,0 +1,6 @@
+node_modules/
+src/generated/
+.tmp/
+.data/
+test-results/
+playwright-report/
