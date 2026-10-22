@@ -1,5 +1,5 @@
-import { Alert, Badge, Button, Calendar, Card, CardContent, CardHeader, Combobox, Field, Input, Select, Table, Textarea } from "./components/ui.js";
-import { bossOptions, brackets, presets, createStore, defaultDifficultyFactorPresetByBracket, difficultyFactorPresetData } from "./fixtures.js";
+import { Alert, Badge, Button, Calendar, Card, CardContent, CardHeader, Combobox, Field, Input, Select, Table } from "./components/ui.js";
+import { bossOptions, brackets, presets, createStore, defaultDifficultyFactorPresetByBracket, defaultDropTierByBracket, difficultyFactorPresetData } from "./fixtures.js";
 import { bossLabel, generatePack, evaluatePack } from "./packs.js";
 import { removePackMembers } from "./deletion.js";
 import { toast, notifyDeployment } from "./generated/notifications.js";
@@ -13,20 +13,20 @@ const fieldTooltips = {
   "identity.competitionGroup": "Groups related challenge configs for the event pipeline. Enter a short group key such as orc-stage.",
   "identity.displayName": "Challenge title in the game. Enter its localization key, for example IDS_DC_Title_Knives_Out.",
   "identity.targetName": "Name of the target or boss shown in challenge context. Enter a readable target name.",
-  "identity.description": "Localization key for the boss or mode description, for example IDS_Revenant_Assassin_Description.",
+  "identity.description": "Localization key for the boss or mode description, for example IDS_Revenant_Assassin_Description. Pick a key from the list or type your own text.",
   "eligibility.minLevel": "Lowest player level allowed into the challenge. Enter a whole number matching a supported bracket.",
   "eligibility.maxLevel": "Highest player level allowed into the challenge. Enter a whole number greater than or equal to Min Level.",
   "eligibility.minCP": "Minimum combat power gate. Enter a whole number; it must be less than or equal to Max CP.",
   "eligibility.maxCP": "Maximum combat power gate. Enter a whole number; it must be greater than or equal to Min CP.",
   "content.modeId": "0: regular challenge ending with a boss. 1: Last Stand mode.",
   "content.bossId": "Boss identifier used by the challenge content setup. Pick the boss this challenge should spawn.",
-  "content.arena": "Arena config key, for example DarkTemple. Select a suggestion or enter the exact key from the game config.",
-  "content.wavePreset": "Key from WavePresetsConfig, for example RevenantAssassin_V3. Select a suggestion or enter a config key.",
+  "content.arena": "Arena where the challenge takes place. Search and pick one of the listed arenas, for example Dark Temple.",
+  "content.wavePreset": "Key from WavePresetsConfig, for example RevenantAssassin_V3. Search and pick one of the listed presets.",
   "timing.durationHours": "Total challenge availability window in hours. Enter 24 for one day, 48 for two days.",
   "timing.attemptDurationSeconds": "Maximum duration of a single attempt in seconds. Enter a whole number such as 180.",
   "timing.timerPerWave": "Wave duration in seconds for Last Stand mode. Leave empty when not used.",
   "rewards.rewardPreset": "Key from ChallengeRewardsConfig, for example ColdReward50_D3_V3. Select a suggestion or enter a config key.",
-  "rewards.dropTier": "Drop configuration key, for example DC_Level50. Select a suggestion or enter a config key.",
+  "rewards.dropTier": "Drop configuration key, for example DC_Level50. Filled in from the level bracket; pick another tier from the list when needed.",
   "rewards.materialDropVariant": "Material drop variant from the game config, for example 16. Preserve the configured value.",
   "players.groupPreset": "Optional player division preset key. Enter a config key or leave empty to use the individual division limits.",
   "players.minRequired": "Minimum players needed to create a division. Smaller groups are distributed among existing divisions (minPlayersRequired).",
@@ -34,7 +34,7 @@ const fieldTooltips = {
   "players.hardLimit": "Hard maximum players per division, including extra players without a competition (playersHardLimit).",
   "visuals.eventGraphicUrl": "NPC or mode portrait. Enter a relative asset path such as challenge/image.png or an HTTP/HTTPS image URL.",
   "visuals.badgeBackgroundUrl": "Badge background. Enter a relative asset path such as challenge/badge.png or an HTTP/HTTPS image URL.",
-  "visuals.immuneIcons": "Immunity icon keys separated by commas, for example Cold.",
+  "visuals.immuneIcons": "Immunity icons shown in the challenge description. Select one or more, for example Cold and Fire.",
   "advanced.attemptPrices": "Ticket prices for attempts, separated by commas, for example 1,1,2,3,4. Leave empty when not configured.",
   "advanced.npcLevelMultiplier": "NPC level multiplier used for balancing, for example 1. Decimal values are allowed.",
   "advanced.minNpcLevelVariance": "Lower NPC level variance value, for example 0.9. Accepts a decimal point or comma.",
@@ -93,6 +93,10 @@ const state = {
   deletionDialog: null, pendingRemoval: null,
   deploy: { status: "Idle", build: null, log: null }, history: initialStore.history,
   ready: false, loading: false, notice: null, storageError: "", submitting: false,
+  // Normalized dependent-tab catalogs from GET /api/references (bosses, presets, ...).
+  // null until the first successful fetch; every reader falls back to the static
+  // fixtures.js catalogs until then, so the UI behaves the same either way.
+  references: null,
 };
 let previewRequest = 0;
 let pollTimer = null;
@@ -205,6 +209,9 @@ async function initialize() {
   render();
   try {
     state.remote = await api("/api/state");
+    // Best-effort: the editor already works from static fixtures.js catalogs, so a
+    // failed or slow /api/references fetch never blocks loading the app itself.
+    api("/api/references").then((references) => { state.references = references; render(); }).catch(() => {});
     state.draft = clone(state.remote.challenges[0] || blankChallenge());
     state.selectedId = state.remote.challenges[0]?.id || "";
     state.schedule.challengeId = state.draft.id;
@@ -246,7 +253,7 @@ function setView(view) {
   state.view = view;
   render();
 }
-function updateDraft(path, value) {
+function updateDraft(path, value, { deferRender = false } = {}) {
   if (isBusy()) return;
   if (path === "id" && originalId()) return;
   const parts = path.split(".");
@@ -260,6 +267,7 @@ function updateDraft(path, value) {
       if (bracket !== state.schedule.levelBracket) {
         const suggestedPreset = defaultDifficultyFactorPresetByBracket[bracket];
         if (suggestedPreset) state.draft.advanced.difficultyFactorPreset = suggestedPreset;
+        if (defaultDropTierByBracket[bracket]) state.draft.rewards.dropTier = defaultDropTierByBracket[bracket];
       }
       state.schedule.levelBracket = bracket;
     }
@@ -267,7 +275,7 @@ function updateDraft(path, value) {
   state.notice = null;
   invalidatePreview();
   persistLocal();
-  render();
+  if (!deferRender) render();
 }
 function updateSchedule(key, value) {
   if (isBusy()) return;
@@ -337,10 +345,10 @@ function blankChallenge(id = "NewStageChallenge") {
     eligibility: { minLevel: 30, maxLevel: 39, minCP: 0, maxCP: 0 },
     content: { modeId: 0, bossId: "ScarredOrc", arena: "", wavePreset: "" },
     timing: { durationHours: 24, attemptDurationSeconds: 180, timerPerWave: 60 },
-    rewards: { rewardPreset: "", dropTier: "", materialDropVariant: "" },
-    players: { groupPreset: "", minRequired: 1, players: 1, hardLimit: 1 },
+    rewards: { rewardPreset: "", dropTier: defaultDropTierByBracket["30-39"], materialDropVariant: "" },
+    players: { groupPreset: "", minRequired: 15, players: 35, hardLimit: 50 },
     visuals: { eventGraphicUrl: "", badgeBackgroundUrl: "", immuneIcons: [] },
-    advanced: { difficultyFactorPreset: defaultDifficultyFactorPresetByBracket["30-39"] || "", minutesLeftToUseHardLimit: "", separateLevels: false },
+    advanced: { difficultyFactorPreset: defaultDifficultyFactorPresetByBracket["30-39"] || "", attemptPrices: "1,1,2,3,4", minutesLeftToUseHardLimit: 300, separateLevels: false },
   };
 }
 function saveDraft() {
@@ -826,6 +834,11 @@ function render() {
     </div>
     ${renderDeletionDialog()}
   `;
+  // Reopen collapsible sections before restoring focus: an input inside a closed <details>
+  // cannot take focus, which made typing in Advanced settings stop after every keystroke.
+  if (advancedOpen) app.querySelector("[data-advanced]")?.setAttribute("open", "");
+  if (membersOpen) app.querySelector("[data-pack-members]")?.setAttribute("open", "");
+  app.querySelectorAll("[data-pack-diff]").forEach((element) => { element.open = openDiffs.includes(element.dataset.packDiff); });
   const restoredSelector = activeSelector || (focusId ? `#${CSS.escape(focusId)}` : "");
   if (restoredSelector) {
     const nextActive = app.querySelector(restoredSelector);
@@ -857,11 +870,8 @@ function render() {
   }
   const overviewTable = app.querySelector(".overview-table-scroll");
   if (overviewTable) overviewTable.scrollLeft = overviewScrollLeft;
-  if (advancedOpen) app.querySelector("[data-advanced]")?.setAttribute("open", "");
   const bossOptions = app.querySelector(".pack-boss-options");
   if (bossOptions) bossOptions.scrollTop = bossScroll;
-  if (membersOpen) app.querySelector("[data-pack-members]")?.setAttribute("open", "");
-  app.querySelectorAll("[data-pack-diff]").forEach((element) => { element.open = openDiffs.includes(element.dataset.packDiff); });
   positionOverviewMenu();
   const deletionDialog = app.querySelector("#delete-dialog");
   if (deletionDialog) {
@@ -958,13 +968,15 @@ function renderOverview() {
   const entries = calendarEntries(state.remote.calendar);
   const now = Date.now();
   const activeCount = state.challenges.filter((challenge) => overviewStatus(challenge, entries, now) === "Active").length;
-  const scheduledThisMonth = Object.values(state.remote.calendar[state.month] || {}).reduce(
-    (sum, day) => sum + Object.values(day).reduce((inner, entries) => inner + entries.length, 0),
-    0,
-  );
-  const warnings = validateChallenge().filter((item) => item.severity === "warn").length;
+  const previousMonth = shiftMonth(state.month, -1);
+  const entryCount = (month) => entries.filter((entry) => entry.month === month).length;
+  const deploys = state.history.map((item) => ({ ...item, timestamp: historyTimestamp(item) }));
+  const deployCount = (month) => deploys.filter((item) => item.timestamp && new Date(item.timestamp).toISOString().slice(0, 7) === month).length;
+  const finished = deploys.filter((item) => ["Success", "Failure"].includes(item.status));
+  const failed = finished.filter((item) => item.status === "Failure").length;
+  const versus = t("vs {month}", { month: monthLabel(previousMonth, { month: "short", year: "numeric" }) });
   return html`
-    <section class="view">
+    <section class="view overview-dashboard">
       <div class="toolbar">
         <div>
           <h2>${t("STAGE challenge workflow")}</h2>
@@ -972,12 +984,251 @@ function renderOverview() {
         </div>
         ${Button({ children: `${overviewIcon("plus")}<span>${t("New Challenge")}</span>`, variant: "primary", attrs: 'data-action="new-challenge"' })}
       </div>
-      <div class="summary-grid">
-        ${summaryCard("Active Challenges", activeCount, "Currently running challenges")}
-        ${summaryCard("Scheduled This Month", scheduledThisMonth, t("{month} calendar entries", { month: state.month }))}
-        ${summaryCard("Validation Warnings", warnings, "Current draft checklist")}
+      <div class="card dash-kpis" role="list">
+        ${kpiTile({ icon: "zap", label: "Active Challenges", value: activeCount, detail: t("{count} challenges in setup", { count: state.challenges.length }) })}
+        ${kpiTile({ icon: "calendar-days", label: "Scheduled This Month", value: entryCount(state.month), delta: entryCount(state.month) - entryCount(previousMonth), detail: versus })}
+        ${kpiTile({ icon: "rocket", label: "STAGE Deploys", value: deployCount(state.month), delta: deployCount(state.month) - deployCount(previousMonth), detail: versus })}
+        ${kpiTile({ icon: "circle-check", label: "Deploy Success Rate", value: finished.length ? `${Math.round(((finished.length - failed) / finished.length) * 100)}%` : "—",
+          detail: finished.length ? t("{failed} failed of {count} builds", { failed, count: finished.length }) : t("No finished builds yet") })}
+      </div>
+      <div class="dash-grid">
+        ${renderScheduleChart(entries)}
+        ${renderBossUsage(entries)}
+        ${renderRecentDeploys(deploys, now)}
+        ${renderMonthStreak(entries, now)}
       </div>
       ${renderChallengeList()}
+    </section>
+  `;
+}
+
+function shiftMonth(month, delta) {
+  const [year, number] = month.split("-").map(Number);
+  return new Date(Date.UTC(year, number - 1 + delta, 1)).toISOString().slice(0, 7);
+}
+
+function monthLabel(month, options) {
+  return new Intl.DateTimeFormat(locale(), { ...options, timeZone: "UTC" }).format(Date.parse(`${month}-01T00:00:00Z`));
+}
+
+// Fixture builds use "YYYY-MM-DD HH:mm UTC"; server builds use ISO timestamps.
+function historyTimestamp(item) {
+  const timestamp = Date.parse(String(item.time || "").replace(/ UTC$/, "Z").replace(" ", "T"));
+  return Number.isFinite(timestamp) ? timestamp : null;
+}
+
+// The chart window: three months before the selected month, the month itself and two ahead.
+function overviewMonths() {
+  return Array.from({ length: 6 }, (_, index) => shiftMonth(state.month, index - 3));
+}
+
+function kpiTile({ icon, label, value, delta, detail }) {
+  return html`
+    <div class="dash-kpi" role="listitem">
+      <span class="dash-kpi-icon">${overviewIcon(icon)}</span>
+      <div class="dash-kpi-body">
+        <div class="summary-label">${t(label)}</div>
+        <div class="dash-kpi-value"><span class="summary-value">${escapeHtml(value)}</span>${delta === undefined ? "" : deltaPill(delta)}</div>
+        <div class="summary-detail">${escapeHtml(detail)}</div>
+      </div>
+    </div>
+  `;
+}
+
+function deltaPill(delta) {
+  const tone = delta > 0 ? "up" : delta < 0 ? "down" : "flat";
+  const paths = {
+    up: '<path d="M22 7 13.5 15.5 8.5 10.5 2 17" /><path d="M16 7h6v6" />',
+    down: '<path d="M22 17 13.5 8.5 8.5 13.5 2 7" /><path d="M16 17h6v-6" />',
+    flat: '<path d="M5 12h14" />',
+  };
+  const text = delta > 0 ? `+${delta}` : delta < 0 ? `−${Math.abs(delta)}` : "0";
+  return `<span class="dash-delta dash-delta-${tone}"><svg viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${paths[tone]}</svg>${text}</span>`;
+}
+
+function packChallengeIds() {
+  return new Set((state.remote.packs || []).flatMap((pack) => pack.challengeIds || pack.bossIds.map((boss) => `${pack.idPrefix}-${boss}`)));
+}
+
+function dashCardHead(id, title, subtitle, action = "") {
+  return html`
+    <div class="dash-card-head">
+      <div>
+        <h2 id="${id}">${t(title)}</h2>
+        ${subtitle ? `<p class="helper">${escapeHtml(subtitle)}</p>` : ""}
+      </div>
+      ${action}
+    </div>
+  `;
+}
+
+function dashLink(view, label) {
+  return `<button type="button" class="dash-link" data-view="${view}">${t(label)}${overviewIcon("arrow-right")}</button>`;
+}
+
+function renderScheduleChart(entries) {
+  const packIds = packChallengeIds();
+  const months = overviewMonths();
+  const rows = months.map((month) => {
+    const inMonth = entries.filter((entry) => entry.month === month);
+    const pack = inMonth.filter((entry) => packIds.has(entry.challengeId)).length;
+    return { month, single: inMonth.length - pack, pack, total: inMonth.length };
+  });
+  // The tallest month fills ~80% of the track so its tooltip stays inside the plot.
+  const scale = Math.max(1, ...rows.map((row) => row.total)) / 0.8;
+  const range = `${monthLabel(months[0], { month: "short" })} – ${monthLabel(months.at(-1), { month: "short", year: "numeric" })}`;
+  const legend = html`
+    <ul class="dash-legend">
+      <li><span class="dash-swatch dash-tone-1" aria-hidden="true"></span>${t("Single challenges")}</li>
+      <li><span class="dash-swatch dash-tone-2" aria-hidden="true"></span>${t("Pack challenges")}</li>
+    </ul>
+  `;
+  return html`
+    <section class="card dash-card dash-schedule" aria-labelledby="dash-schedule-title">
+      ${dashCardHead("dash-schedule-title", "Schedule overview", t("Calendar entries per month, {range}", { range }), legend)}
+      <div class="dash-plot" role="list">
+        ${rows.map((row, index) => {
+          const height = `${((row.total / scale) * 100).toFixed(1)}%`;
+          const name = monthLabel(row.month, { month: "long", year: "numeric" });
+          const edge = index === 0 ? "first" : index === rows.length - 1 ? "last" : "";
+          return html`
+            <div class="dash-col ${row.month === state.month ? "current" : ""} ${edge}" role="listitem" tabindex="0" style="--h: ${height}"
+              aria-label="${escapeHtml(t("{month}: {total} entries, {single} single, {pack} from packs", { ...row, month: name }))}">
+              <div class="dash-track" aria-hidden="true">
+                <span class="dash-band"></span>
+                <span class="dash-stack">
+                  ${row.single ? `<span class="dash-seg dash-tone-1" style="flex-grow: ${row.single}"></span>` : ""}
+                  ${row.pack ? `<span class="dash-seg dash-tone-2" style="flex-grow: ${row.pack}"></span>` : ""}
+                </span>
+                <span class="dash-tip"><strong>${row.total}</strong><span class="dash-tip-detail">${escapeHtml(name)} · <span class="dash-swatch dash-tone-1"></span>${row.single} <span class="dash-swatch dash-tone-2"></span>${row.pack}</span></span>
+              </div>
+              <span class="dash-col-label" aria-hidden="true">${escapeHtml(monthLabel(row.month, { month: "short" }))}</span>
+            </div>
+          `;
+        }).join("")}
+      </div>
+      ${rows.some((row) => row.total) ? "" : `<p class="dash-empty">${t("No calendar entries in this period.")}</p>`}
+    </section>
+  `;
+}
+
+function renderBossUsage(entries) {
+  const months = new Set(overviewMonths());
+  const bossById = new Map([...state.challenges, ...state.remote.challenges].map((challenge) => [challenge.id, challenge.content.bossId]));
+  const bossName = (id) => (state.references?.bosses || bossOptions).find((boss) => boss.value === id)?.label || id;
+  const counts = new Map();
+  for (const entry of entries) {
+    if (!months.has(entry.month)) continue;
+    const boss = bossById.get(entry.challengeId) || "";
+    counts.set(boss, (counts.get(boss) || 0) + 1);
+  }
+  const ranked = [...counts].sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]));
+  const shown = ranked.slice(0, ranked.length > 4 ? 3 : 4);
+  const otherCount = ranked.slice(shown.length).reduce((sum, [, count]) => sum + count, 0);
+  const slices = [
+    ...shown.map(([boss, count], index) => ({ label: boss ? bossName(boss) : t("No setup config"), count, tone: String(index + 1) })),
+    ...(otherCount ? [{ label: t("Other bosses"), count: otherCount, tone: "other" }] : []),
+  ];
+  const total = slices.reduce((sum, slice) => sum + slice.count, 0);
+  const percent = (count) => `${Math.round((count / total) * 100)}%`;
+  // Round caps extend each arc by half the stroke, so the gap must exceed the stroke width.
+  const radius = 46, stroke = 11, circumference = 2 * Math.PI * radius, gap = slices.length > 1 ? stroke + 5 : 0;
+  let offset = 0;
+  const arcs = slices.map((slice) => {
+    const length = (slice.count / total) * circumference;
+    const arc = `<circle class="dash-arc dash-stroke-${slice.tone}" cx="60" cy="60" r="${radius}" stroke-width="${stroke}"
+      stroke-dasharray="${Math.max(length - gap, 0.01).toFixed(2)} ${circumference.toFixed(2)}" stroke-dashoffset="${(-offset).toFixed(2)}"
+      ${slices.length > 1 ? 'stroke-linecap="round"' : ""}><title>${escapeHtml(`${slice.label}: ${slice.count} (${percent(slice.count)})`)}</title></circle>`;
+    offset += length;
+    return arc;
+  });
+  return html`
+    <section class="card dash-card dash-bosses" aria-labelledby="dash-bosses-title">
+      ${dashCardHead("dash-bosses-title", "Boss usage", t("Share of calendar entries in the same period"))}
+      <div class="dash-donut">
+        <svg viewBox="0 0 120 120" role="img" aria-label="${escapeHtml(slices.map((slice) => `${slice.label} ${percent(slice.count)}`).join(", ") || t("No calendar entries in this period."))}">
+          <circle class="dash-donut-track" cx="60" cy="60" r="${radius}" stroke-width="${stroke}" />
+          <g transform="rotate(-90 60 60)">${arcs.join("")}</g>
+        </svg>
+        <div class="dash-donut-center" aria-hidden="true"><strong>${total}</strong><span>${t("total")}</span></div>
+      </div>
+      ${total ? html`
+        <ul class="dash-share-list">
+          ${slices.map((slice) => `<li><span class="dash-swatch dash-tone-${slice.tone}" aria-hidden="true"></span><span class="dash-share-name">${escapeHtml(slice.label)}</span><span class="dash-share-count">${slice.count}</span><strong>${percent(slice.count)}</strong></li>`).join("")}
+        </ul>
+      ` : `<p class="dash-empty">${t("No calendar entries in this period.")}</p>`}
+    </section>
+  `;
+}
+
+function relativeTime(timestamp, now) {
+  const seconds = Math.round((timestamp - now) / 1000);
+  const units = [["year", 31536000], ["month", 2592000], ["day", 86400], ["hour", 3600], ["minute", 60]];
+  const [unit, size] = units.find(([, length]) => Math.abs(seconds) >= length) || ["minute", 60];
+  return new Intl.RelativeTimeFormat(locale(), { numeric: "auto" }).format(Math.round(seconds / size), unit);
+}
+
+function renderRecentDeploys(deploys, now) {
+  const recent = [...deploys].sort((a, b) => (b.timestamp || 0) - (a.timestamp || 0)).slice(0, 4);
+  const tone = (status) => (status === "Success" ? "overview-status-active" : status === "Failure" ? "overview-status-disabled" : "overview-status-ready");
+  return html`
+    <section class="card dash-card dash-activity" aria-labelledby="dash-activity-title">
+      ${dashCardHead("dash-activity-title", "Recent deployments", "", dashLink("history", "View all"))}
+      ${recent.length ? html`
+        <ul class="dash-activity-list">
+          ${recent.map((item) => {
+            const kind = item.deletion ? "deletion" : item.packId ? "pack" : "challenge";
+            return html`
+              <li>
+                <span class="dash-activity-icon dash-activity-${kind}" aria-hidden="true">${overviewIcon({ deletion: "trash-2", pack: "layers", challenge: "rocket" }[kind])}</span>
+                <div class="dash-activity-text">
+                  <strong>${escapeHtml(item.packName || item.challengeId)}</strong>
+                  <span>${escapeHtml(item.id)} · ${t({ deletion: "Deletion", pack: "Pack deploy", challenge: "Challenge deploy" }[kind])}</span>
+                </div>
+                <div class="dash-activity-meta">
+                  <span class="overview-status ${tone(item.status)}"><span class="overview-status-dot" aria-hidden="true"></span>${t(item.status)}</span>
+                  ${item.timestamp ? `<time datetime="${new Date(item.timestamp).toISOString()}" title="${escapeHtml(item.time)}">${escapeHtml(relativeTime(item.timestamp, now))}</time>` : ""}
+                </div>
+              </li>
+            `;
+          }).join("")}
+        </ul>
+      ` : `<p class="dash-empty">${t("No deployments yet.")}</p>`}
+    </section>
+  `;
+}
+
+function renderMonthStreak(entries, now) {
+  const month = state.month;
+  const [year, number] = month.split("-").map(Number);
+  const weekStart = locale() === "pl-PL" ? 1 : 0;
+  const leading = (new Date(Date.UTC(year, number - 1, 1)).getUTCDay() - weekStart + 7) % 7;
+  // 2024-01-07 is a Sunday, so the offset yields a Sunday- or Monday-first header.
+  const weekdays = Array.from({ length: 7 }, (_, index) => new Intl.DateTimeFormat(locale(), { weekday: "narrow", timeZone: "UTC" }).format(Date.UTC(2024, 0, 7 + weekStart + index)));
+  const counts = new Map();
+  entries.filter((entry) => entry.month === month).forEach((entry) => counts.set(entry.day, (counts.get(entry.day) || 0) + 1));
+  const today = new Date(now).toISOString().slice(0, 10);
+  const dateOf = (day) => `${month}-${String(day).padStart(2, "0")}`;
+  const completed = [...counts.keys()].filter((day) => dateOf(day) < today).length;
+  const days = Array.from({ length: monthDays(month) }, (_, index) => {
+    const day = index + 1;
+    const count = counts.get(day) || 0;
+    const classes = ["dash-day", count && "scheduled", count && dateOf(day) < today && "past", dateOf(day) === today && "today"].filter(Boolean).join(" ");
+    const label = count ? t("Day {day}: {count} calendar entries", { day, count }) : "";
+    return `<span class="${classes}" ${label ? `title="${escapeHtml(label)}" aria-label="${escapeHtml(label)}"` : 'aria-hidden="true"'}>${day}</span>`;
+  });
+  return html`
+    <section class="card dash-card dash-streak" aria-labelledby="dash-streak-title">
+      ${dashCardHead("dash-streak-title", "Monthly schedule", monthLabel(month, { month: "long", year: "numeric" }), dashLink("calendar", "Open calendar"))}
+      <div class="dash-streak-summary">
+        <p><strong>${counts.size}</strong> ${t("/ {days} days with entries", { days: monthDays(month) })}</p>
+        <span class="dash-done-chip">${overviewIcon("circle-check")}${t("{count} completed", { count: completed })}</span>
+      </div>
+      <div class="dash-days">
+        ${weekdays.map((day) => `<span class="dash-weekday" aria-hidden="true">${escapeHtml(day)}</span>`).join("")}
+        ${'<span class="dash-day blank" aria-hidden="true"></span>'.repeat(leading)}
+        ${days.join("")}
+      </div>
     </section>
   `;
 }
@@ -1123,17 +1374,6 @@ function closeOverviewMenu(restoreFocus = false) {
   if (restoreFocus) trigger?.focus({ preventScroll: true });
 }
 
-function summaryCard(label, value, detail) {
-  return Card({
-    className: "summary-card",
-    children: html`
-      <div class="summary-label">${t(label)}</div>
-      <div class="summary-value">${escapeHtml(value)}</div>
-      <div class="summary-detail">${escapeHtml(t(detail))}</div>
-    `,
-  });
-}
-
 function renderChallenges() {
   return html`
     <section class="view">
@@ -1195,7 +1435,7 @@ function renderIdentitySection() {
         ${textField("Competition Group", "identity.competitionGroup", state.draft.identity.competitionGroup)}
         ${!state.pack ? textField("Display Name", "identity.displayName", state.draft.identity.displayName) : ""}
         ${!state.pack ? textField("Target Name", "identity.targetName", state.draft.identity.targetName) : ""}
-        ${textArea("Description", "identity.description", state.draft.identity.description)}
+        ${descriptionField()}
       </div>
     `,
   );
@@ -1213,6 +1453,7 @@ function renderEligibilitySection() {
         ${numberField("Max CP", "eligibility.maxCP", state.draft.eligibility.maxCP)}
       </div>
     `,
+    supportedBracketsTooltip(),
   );
 }
 
@@ -1222,10 +1463,10 @@ function renderContentSection() {
     t("Mode, boss, arena and wave preset"),
     html`
       <div class="form-grid">
-        ${selectField("ModeID", "content.modeId", state.draft.content.modeId, [{ value: 0, label: t("0 - Regular challenge") }, { value: 1, label: t("1 - Last Stand") }])}
+        ${modeField()}
         ${!state.pack ? bossField() : ""}
-        ${presetField("Arena", "content.arena", state.draft.content.arena, presets.arenas)}
-        ${presetField("WavePreset", "content.wavePreset", state.draft.content.wavePreset, presets.waves)}
+        ${presetField("Arena", "content.arena", state.draft.content.arena, optionsFor("arenas", presets.arenas), { listOnly: true })}
+        ${presetField("WavePreset", "content.wavePreset", state.draft.content.wavePreset, optionsFor("wavePresets", presets.waves), { listOnly: true })}
       </div>
     `,
   );
@@ -1251,8 +1492,8 @@ function renderRewardsSection() {
     t("Reward preset, drop tier and material variant"),
     html`
       <div class="form-grid">
-        ${presetField("RewardPreset", "rewards.rewardPreset", state.draft.rewards.rewardPreset, presets.rewards)}
-        ${presetField("DropTier", "rewards.dropTier", state.draft.rewards.dropTier, presets.drops)}
+        ${presetField("RewardPreset", "rewards.rewardPreset", state.draft.rewards.rewardPreset, optionsFor("rewardPresets", presets.rewards))}
+        ${presetField("DropTier", "rewards.dropTier", state.draft.rewards.dropTier, optionsFor("dropTiers", presets.drops), { listOnly: true })}
         ${textField("MaterialDropVariant", "rewards.materialDropVariant", state.draft.rewards.materialDropVariant)}
       </div>
     `,
@@ -1265,7 +1506,7 @@ function renderPlayersSection() {
     t("Group preset and participation limits"),
     html`
       <div class="form-grid">
-        ${presetField("PlayersGroupPreset", "players.groupPreset", state.draft.players.groupPreset, presets.groups)}
+        ${presetField("PlayersGroupPreset", "players.groupPreset", state.draft.players.groupPreset, optionsFor("playerGroupPresets", presets.groups))}
         ${numberField("MinPlayersRequired", "players.minRequired", state.draft.players.minRequired)}
         ${numberField("Players", "players.players", state.draft.players.players)}
         ${numberField("PlayersHardLimit", "players.hardLimit", state.draft.players.hardLimit)}
@@ -1280,9 +1521,9 @@ function renderVisualsSection() {
     "",
     html`
       <div class="form-grid">
-        ${textField("EventGraphicURL", "visuals.eventGraphicUrl", state.draft.visuals.eventGraphicUrl)}
-        ${textField("BadgeBackgroundURL", "visuals.badgeBackgroundUrl", state.draft.visuals.badgeBackgroundUrl)}
-        ${textField("Immunity Icons", "visuals.immuneIcons", (state.draft.visuals.immuneIcons || []).join(", "))}
+        ${assetPathField("EventGraphicURL", "eventGraphicUrl", "eventGraphics")}
+        ${assetPathField("BadgeBackgroundURL", "badgeBackgroundUrl", "badgeBackgrounds")}
+        ${immunityIconsField()}
       </div>
       <div class="image-row">
         ${imagePreview(state.draft.visuals.eventGraphicUrl, "Event graphic preview")}
@@ -1292,12 +1533,25 @@ function renderVisualsSection() {
   );
 }
 
-function section(title, subtitle, body) {
+function section(title, subtitle, body, titleAddon = "") {
   return Card({
     children: CardContent({
-      children: `${CardHeader({ title, description: subtitle })}${body}`,
+      children: `${CardHeader({ title, description: subtitle, titleAddon })}${body}`,
     }),
   });
+}
+
+function supportedBracketsTooltip() {
+  return html`
+    <span class="tooltip brackets-tooltip">
+      <button class="brackets-trigger" type="button" aria-describedby="supported-brackets-help">${t("Supported brackets")}<span class="tooltip-trigger" aria-hidden="true"></span></button>
+      <span class="tooltip-content" id="supported-brackets-help" role="tooltip">
+        <strong>${t("Supported brackets")}</strong>
+        <span class="bracket-list">${brackets.map((bracket) => `<span>${bracket}</span>`).join("")}</span>
+        <span>${t("Min Level and Max Level must match one bracket exactly.")}</span>
+      </span>
+    </span>
+  `;
 }
 
 function fieldOptions(label, path) {
@@ -1314,11 +1568,6 @@ function textField(label, path, value) {
     control: Input({ value, attrs: `${fieldAttributes(path)} data-field="${path}" placeholder="${escapeHtml(placeholderFor(path))}" ${path === "id" && originalId() ? 'readonly aria-readonly="true"' : ""}` }),
   });
 }
-function textArea(label, path, value) {
-  return Field({ ...fieldOptions(label, path), full: true,
-    control: Textarea({ value, attrs: `${fieldAttributes(path)} data-field="${path}" placeholder="${escapeHtml(placeholderFor(path))}"` }),
-  });
-}
 function numberField(label, path, value, helper = "") {
   const fractional = ["timing.durationHours", "advanced.npcLevelMultiplier", "advanced.minNpcLevelVariance", "advanced.maxNpcLevelVariance", "advanced.positionRankingMultiplier", "advanced.rankingScoreMultiplier"].includes(path);
   const display = fractional && typeof value === "number" && locale() === "pl-PL" ? String(value).replace(".", ",") : value;
@@ -1326,15 +1575,58 @@ function numberField(label, path, value, helper = "") {
     control: Input({ value: display ?? "", type: fractional ? "text" : "number", attrs: `${fieldAttributes(path)} ${fractional ? 'inputmode="decimal"' : 'min="0" step="1"'} data-number-field="${path}" placeholder="${escapeHtml(placeholderFor(path))}"` }),
   });
 }
-function selectField(label, path, value, options) {
-  return Field({ ...fieldOptions(label, path), control: Select({ value, options, attrs: `${fieldAttributes(path)} data-field="${path}"` }) });
+
+// Reads a normalized catalog from GET /api/references when it has loaded; falls back
+// to the static fixtures.js list otherwise, so the field behaves identically before
+// and after that fetch resolves. `fallbackValues` may be plain config-key strings or
+// already-shaped { value, label } entries (e.g. bossOptions).
+function optionsFor(catalogKey, fallbackValues) {
+  const catalog = state.references?.[catalogKey];
+  if (catalog) return catalog.map(({ value, label }) => ({ value, label }));
+  return fallbackValues.map((entry) => (typeof entry === "object" ? entry : { value: entry, label: entry }));
 }
 
-function presetField(label, path, value, options) {
+// `listOnly` presets accept only catalog values: typing searches the list (debounced) instead of
+// entering a custom key. A stored value missing from the catalog still shows until it is changed.
+function presetField(label, path, value, options, { listOnly = false } = {}) {
   return Field({
     ...fieldOptions(label, path),
-    control: Combobox({ value, options: options.map((key) => ({ value: key, label: key })), path,
-      attrs: fieldAttributes(path), placeholder: "Config key...", allowCustom: true }),
+    control: Combobox({ value, options, path, attrs: fieldAttributes(path),
+      ...(listOnly ? { placeholder: "Search...", debounce: 250 } : { placeholder: "Config key...", allowCustom: true }) }),
+  });
+}
+
+// ChallengeDescription suggests the localization keys used in the sheet; any other text can still be typed.
+function descriptionField() {
+  const path = "identity.description";
+  return Field({
+    ...fieldOptions("Description", path),
+    full: true,
+    control: Combobox({
+      value: state.draft.identity.description || "",
+      options: optionsFor("challengeDescriptions", presets.descriptions),
+      path,
+      attrs: fieldAttributes(path),
+      placeholder: placeholderFor(path),
+      allowCustom: true,
+      debounce: 250,
+      toggleLabel: "Open description keys",
+      emptyLabel: "No matching keys. The typed text is kept.",
+    }),
+  });
+}
+
+function modeField() {
+  const path = "content.modeId";
+  return Field({
+    ...fieldOptions("ModeID", path),
+    control: Combobox({
+      value: state.draft.content.modeId,
+      options: [{ value: 0, label: t("0 - Regular challenge") }, { value: 1, label: t("1 - Last Stand") }],
+      path,
+      attrs: fieldAttributes(path),
+      placeholder: "Select mode...",
+    }),
   });
 }
 
@@ -1344,7 +1636,7 @@ function bossField() {
     ...fieldOptions("BossID", path),
     control: Combobox({
       value: state.draft.content.bossId,
-      options: bossOptions,
+      options: optionsFor("bosses", bossOptions),
       path,
       attrs: fieldAttributes(path),
       placeholder: "Search boss...",
@@ -1359,7 +1651,7 @@ function difficultyFactorPresetField() {
     ...fieldOptions("Difficulty Factor Preset", path),
     control: Combobox({
       value: state.draft.advanced.difficultyFactorPreset || "",
-      options: presets.difficultyFactors.map((key) => ({ value: key, label: key })),
+      options: optionsFor("difficultyPresets", presets.difficultyFactors),
       path,
       attrs: fieldAttributes(path),
       placeholder: "Search preset...",
@@ -1368,9 +1660,49 @@ function difficultyFactorPresetField() {
     }),
   });
 }
+// Known graphic assets as a searchable list. Other relative asset paths and HTTP(S) URLs can
+// still be typed; filtering and the preview re-render wait until typing pauses.
+function assetPathField(label, key, catalogKey) {
+  const path = `visuals.${key}`;
+  return Field({
+    ...fieldOptions(label, path),
+    control: Combobox({
+      value: state.draft.visuals[key] || "",
+      options: optionsFor(catalogKey, presets[catalogKey]),
+      path,
+      attrs: fieldAttributes(path),
+      placeholder: "Search or enter a path...",
+      allowCustom: true,
+      debounce: 250,
+      toggleLabel: "Open graphics list",
+      emptyLabel: "No matching graphics. The typed value is kept.",
+    }),
+  });
+}
+// Several immunity icons can be selected; the search waits until typing pauses, like EventGraphicURL.
+function immunityIconsField() {
+  const path = "visuals.immuneIcons";
+  return Field({
+    ...fieldOptions("Immunity Icons", path),
+    control: Combobox({
+      value: state.draft.visuals.immuneIcons || [],
+      options: optionsFor("immunityIcons", presets.immunityIcons),
+      path,
+      attrs: fieldAttributes(path),
+      placeholder: "Search icons...",
+      multiple: true,
+      debounce: 250,
+      toggleLabel: "Open icon list",
+      emptyLabel: "No matching icons.",
+    }),
+  });
+}
 function difficultyFactorPresetDetails() {
   const name = state.draft.advanced.difficultyFactorPreset;
-  const row = difficultyFactorPresetData[name];
+  // Prefer the value carried by the reference catalog entry (matches the sheet-driven
+  // architecture: the display data travels with the selected reference) and fall back
+  // to the static fixtures.js table before /api/references has loaded.
+  const row = state.references?.difficultyPresets?.find((entry) => entry.value === name)?.details || difficultyFactorPresetData[name];
   if (!row) {
     return `<p class="helper">${t("Select a Difficulty Factor Preset to see its ChallengeDifficultyFactorPresets values.")}</p>`;
   }
@@ -1802,22 +2134,88 @@ function bindEvents() {
     root.querySelector("[data-combobox-input]").setAttribute("aria-activedescendant", option.id);
     option.scrollIntoView({ block: "nearest" });
   };
+  // Spaces, underscores, hyphens, dots and slashes match each other, so "scarred orc" finds ui_img_scarred_orc_1.png.
+  const searchText = (text) => text.toLocaleLowerCase().replace(/[\s_\-./]+/g, " ").trim();
   const filterCombobox = (input) => {
     const root = input.closest("[data-combobox]");
-    const query = input.value.trim().toLocaleLowerCase();
+    const query = searchText(input.value);
     root.querySelectorAll("[data-combobox-option]").forEach((option) => {
-      option.hidden = !option.dataset.label.toLocaleLowerCase().includes(query);
+      option.hidden = !searchText(option.dataset.label).includes(query);
     });
     const options = visibleComboboxOptions(root);
     root.querySelector(".combobox-empty").hidden = options.length > 0;
     setComboboxOpen(root, true);
     activateComboboxOption(root, root.hasAttribute("data-allow-custom") ? null : options[0]);
   };
+  // Comboboxes with data-debounce write a typed custom value into the draft immediately but
+  // re-render, re-validate and filter only once typing pauses for that many milliseconds.
+  const comboboxDebounces = new Map();
+  const cancelComboboxDebounce = (path) => {
+    clearTimeout(comboboxDebounces.get(path)?.timer);
+    comboboxDebounces.delete(path);
+  };
+  const flushComboboxDebounce = (path) => {
+    const pending = comboboxDebounces.get(path);
+    if (!pending) return;
+    cancelComboboxDebounce(path);
+    pending.run();
+  };
+  const debounceCombobox = (input) => {
+    const path = input.dataset.comboboxInput;
+    const root = input.closest("[data-combobox]");
+    const allowCustom = root.hasAttribute("data-allow-custom");
+    if (allowCustom) {
+      root.dataset.selectedLabel = input.value;
+      updateDraft(path, input.value, { deferRender: true });
+    }
+    if (root.querySelector(".combobox-menu").hidden) setComboboxOpen(root, true);
+    const run = () => {
+      const selector = `[data-combobox-input="${CSS.escape(path)}"]`;
+      const wasOpen = app.querySelector(selector)?.getAttribute("aria-expanded") === "true";
+      if (allowCustom) render();
+      const current = app.querySelector(selector);
+      if (!current) return;
+      if (wasOpen && current === document.activeElement) filterCombobox(current);
+      else setComboboxOpen(current.closest("[data-combobox]"), false);
+    };
+    cancelComboboxDebounce(path);
+    comboboxDebounces.set(path, { run, timer: setTimeout(() => { comboboxDebounces.delete(path); run(); }, Number(root.dataset.debounce)) });
+  };
+  // Multi-select: write the new selection, then keep the list open with the same search and active option.
+  const setComboboxValues = (root, values, activeValue = "") => {
+    if (isBusy()) return;
+    const input = root.querySelector("[data-combobox-input]");
+    const path = input.dataset.comboboxInput;
+    const query = input.value;
+    const reopen = !root.querySelector(".combobox-menu").hidden;
+    cancelComboboxDebounce(path);
+    const hidden = root.querySelector('[type="hidden"][data-field]');
+    hidden.value = values.join(",");
+    hidden.dispatchEvent(new Event("input", { bubbles: true }));
+    const next = app.querySelector(`[data-combobox-input="${CSS.escape(path)}"]`);
+    if (!next) return;
+    next.value = query;
+    next.focus({ preventScroll: true });
+    const nextRoot = next.closest("[data-combobox]");
+    if (!reopen) return setComboboxOpen(nextRoot, false);
+    filterCombobox(next);
+    const option = [...nextRoot.querySelectorAll("[data-combobox-option]")].find((item) => item.dataset.value === activeValue && !item.hidden);
+    if (option) activateComboboxOption(nextRoot, option);
+  };
+  const comboboxValues = (root) => root.querySelector('[type="hidden"][data-field]').value.split(",").filter(Boolean);
+  const toggleComboboxOption = (option) => {
+    const root = option.closest("[data-combobox]");
+    const values = comboboxValues(root);
+    const value = option.dataset.value;
+    setComboboxValues(root, values.includes(value) ? values.filter((item) => item !== value) : [...values, value], value);
+  };
   const chooseComboboxOption = (option) => {
+    if (option.closest("[data-multiple]")) return toggleComboboxOption(option);
     if (isBusy()) return;
     const root = option.closest("[data-combobox]");
     const input = root.querySelector("[data-combobox-input]");
     const value = root.querySelector('[type="hidden"][data-field]');
+    cancelComboboxDebounce(input.dataset.comboboxInput);
     input.value = option.dataset.label;
     root.dataset.selectedLabel = option.dataset.label;
     setComboboxOpen(root, false);
@@ -1829,6 +2227,9 @@ function bindEvents() {
     } else {
       value.value = option.dataset.value;
       value.dispatchEvent(new Event("input", { bubbles: true }));
+      // Restoring focus after the re-render reopens the list; a choice should leave it closed.
+      const next = app.querySelector(`[data-combobox-input="${CSS.escape(input.dataset.comboboxInput)}"]`);
+      if (next) setComboboxOpen(next.closest("[data-combobox]"), false);
     }
   };
   const positionTooltip = (event) => {
@@ -1895,6 +2296,8 @@ function bindEvents() {
     }
     if (event.key === "Escape" && event.target.matches(".tooltip-trigger")) return event.target.blur();
     if (!event.target.matches("[data-combobox-input]")) return;
+    // Navigate the filtered list, not the one from before typing paused.
+    if (["ArrowDown", "ArrowUp", "Enter"].includes(event.key)) flushComboboxDebounce(event.target.dataset.comboboxInput);
     const root = event.target.closest("[data-combobox]");
     const options = visibleComboboxOptions(root);
     const active = root.querySelector(".combobox-option.active");
@@ -1902,6 +2305,14 @@ function bindEvents() {
       event.preventDefault();
       event.target.value = root.dataset.selectedLabel;
       setComboboxOpen(root, false);
+      return;
+    }
+    if (event.key === "Backspace" && root.hasAttribute("data-multiple") && !event.target.value) {
+      const values = comboboxValues(root);
+      if (values.length) {
+        event.preventDefault();
+        setComboboxValues(root, values.slice(0, -1));
+      }
       return;
     }
     if (event.key === "Enter" && !root.querySelector(".combobox-menu").hidden) {
@@ -1949,6 +2360,7 @@ function bindEvents() {
       return;
     }
     if (field.matches("[data-combobox-input]")) {
+      if (field.closest("[data-combobox]").hasAttribute("data-debounce")) return debounceCombobox(field);
       if (field.closest("[data-combobox]").hasAttribute("data-allow-custom")) updateDraft(field.dataset.comboboxInput, field.value);
       return filterCombobox(field);
     }
@@ -1985,6 +2397,7 @@ function bindEvents() {
     if (field.matches("[data-boolean-field]")) updateDraft(field.dataset.booleanField, field.checked);
   });
   app.addEventListener("click", (event) => {
+    if (event.target.matches?.(".combobox-control")) return event.target.querySelector("[data-combobox-input]").focus();
     const button = event.target.closest("button");
     if (!button || button.disabled) return;
     const data = button.dataset;
@@ -1995,6 +2408,10 @@ function bindEvents() {
       return;
     }
     if (button.hasAttribute("data-combobox-option")) return chooseComboboxOption(button);
+    if (button.hasAttribute("data-combobox-remove")) {
+      const root = button.closest("[data-combobox]");
+      return setComboboxValues(root, comboboxValues(root).filter((item) => item !== button.dataset.comboboxRemove));
+    }
     if (data.view) return setView(data.view);
     if (data.action === "toggle-theme") return changePreferences({ theme: getPreferences().theme === "dark" ? "light" : "dark" });
     if (data.action === "retry-load") return initialize();

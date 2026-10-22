@@ -42,10 +42,21 @@ The server binds to the local loopback interface. This application is for local 
 - `src/domain.js`: shared validation, row mapping, targeted calendar mutations and diffs.
 - `src/packs.js`: shared pack generation, validation and aggregated batch diffs.
 - `src/deletion.js`: deletion scopes, calendar cleanup and pack membership updates.
-- `src/fixtures.js`: mock configurations and preset catalogs.
-- `server.mjs`: local API, persisted mock repository, preview plans and mock STAGE builds.
+- `src/fixtures.js`: mock configurations and preset catalogs. This is the seed data for `MockRepository` and the test fixtures; it is not the production reference authority (see "Sheet-driven architecture" below).
+- `src/references.js`: builds the normalized `ReferenceCatalog` (bosses, arenas, wave/reward presets, drop tiers, player-group presets, difficulty presets) served by `GET /api/references`. Each entry keeps its source tab and source key.
+- `src/repositories/config-repository.js`: the `ConfigRepository` interface (`init`, `state`, `getReferences`, `persist`, ...) that `server.mjs` depends on instead of a specific storage backend.
+- `src/repositories/mock.js`: `MockRepository`, the default local implementation — atomic `.data/store.json` writes and interrupted-build recovery. No company credentials are required to run in this mode.
+- `server.mjs`: local API, preview plans and mock STAGE builds, orchestrated against the injected `ConfigRepository` (defaults to `MockRepository`).
 
-Endpoints: `GET /api/state`, `POST /api/preview` and `POST /api/deploy`. The deploy API rejects any target other than `stage`, independently of browser validation. Audit records include the approved diff, local initiator, build ID and outcome. No real Jenkins or Google Sheets service is contacted.
+Endpoints: `GET /api/state`, `GET /api/references`, `POST /api/preview` and `POST /api/deploy`. The deploy API rejects any target other than `stage`, independently of browser validation. Audit records include the approved diff, local initiator, build ID and outcome. No real Jenkins or Google Sheets service is contacted.
+
+## Sheet-driven architecture
+
+The real spreadsheet is large, multi-tabbed and internally cross-referenced (reward presets, wave presets, arenas, difficulty presets, etc. all feed `ChallengeSetupConfig`). Rather than re-typing that data into this app by hand indefinitely, `server.mjs` depends on a `ConfigRepository` interface (`src/repositories/config-repository.js`) instead of talking to `.data/store.json` directly, and the front end reads dependent-tab catalogs through `GET /api/references` (`src/references.js`) instead of importing `src/fixtures.js` presets directly wherever practical.
+
+Today the only implementation is `MockRepository` (`src/repositories/mock.js`), seeded from `src/fixtures.js` — this preserves the existing local/offline workflow and keeps every test green without any Google credentials. A future `GoogleSheetsRepository` implementing the same interface could replace it for `ChallengeSetupConfig`/`ChallengeCalendar` reads and writes, with the dependent tabs (reward presets, wave presets, arenas, difficulty presets, ...) treated as read-only reference sources first.
+
+Before building that real adapter, the team needs to confirm: the exact spreadsheet ID(s) and tab names used on STAGE; which tab/column is canonical for each reference catalog; whether references use a single key or composite keys; the exact `ChallengeCalendar` serialization in the real workbook (the mock uses `HH:mm:ChallengeID`); Jenkins job name, parameters and authentication; real deployment ordering/rollback if a sheet write succeeds but Jenkins fails (or vice versa); concurrency expectations; and whether Sheets access uses user OAuth or a server service account. None of this is guessed at in the current code.
 
 ## Language and theme
 
@@ -81,8 +92,11 @@ The preview endpoint additionally accepts `{ deletion: { kind: "challenge" | "pa
 The setup mapping covers the 38 named columns in the supplied spreadsheet PDF, in header order. `tests/fixtures/spreadsheet.mjs` records its Revenant Assassin example, including optional blanks and fractional values, for domain, API, pack and browser regression tests.
 
 - `ModeID` is numeric: `0` is a regular challenge ending with a boss, `1` is Last Stand. Old saved mock names remain visible but require an explicit choice before preview/deployment; no ambiguous migration rewrites existing records or drafts.
-- Arena, wave, reward, drop and player-group presets are editable config keys with suggestions, not exhaustive catalogs. New challenges leave required external keys blank for explicit selection. Known PDF examples are included alongside legacy mock suggestions. Existence in the actual game configs is not verified by the local mock.
-- Graphic fields accept HTTP/HTTPS URLs or relative game asset paths, e.g. `challenge/image.png`. Game paths are preserved as config values, not fetched from the dashboard server. Path traversal, absolute local paths and non-web URL schemes are rejected.
+- Reward and player-group presets are editable config keys with suggestions, not exhaustive catalogs. Arena (Forest, Dark Temple, Graveyard, Cave, Rockyfields; stored as `DarkTemple` etc.), WavePreset (the 525 distinct keys from the sheet) and DropTier (`DC_Level10`-`DC_Level70`, plus `DC_Level69`) accept only listed values, searched with a 250 ms debounce; a stored value outside the list stays until it is changed. DropTier is filled in from the level bracket whenever it changes (`60-69` gives `DC_Level69`, other brackets their lower decade) and stays editable.
+- ChallengeDescription suggests the 37 localization keys used in the sheet (`challengeDescriptions` reference catalog) with a 250 ms debounced search; any other text can still be typed.
+- New challenges start with MinPlayersRequired 15, Players 35, PlayersHardLimit 50, AttemptPrices `1,1,2,3,4` and a 300-minute hard-limit window; all remain editable. New challenges leave required external keys blank for explicit selection. Known PDF examples are included alongside legacy mock suggestions. Existence in the actual game configs is not verified by the local mock.
+- Graphic fields accept HTTP/HTTPS URLs or relative game asset paths, e.g. `challenge/image.png`. EventGraphicURL and BadgeBackgroundURL suggest the known asset paths (the `eventGraphics` and `badgeBackgrounds` reference catalogs) in searchable lists; their filtering and preview wait until typing pauses for 250 ms, and other paths or URLs can still be typed.
+- Immunity Icons is a searchable multi-select over the `immunityIcons` catalog (Physical, Cold, Fire, Poison) and is stored comma-separated in `ImmuneIconsInChallengeDescription`. Existing keys outside the list stay selected and are marked rather than dropped. Game paths are preserved as config values, not fetched from the dashboard server. Path traversal, absolute local paths and non-web URL schemes are rejected.
 - NPC variance and multiplier inputs accept decimal points or commas and store finite numbers. `SeparateLevels` is a checkbox internally and maps to numeric `0`/`1` in sheet diffs. Absent optional values remain blank.
 - `MinutesLeftToUseHardLimit`: blank disables, zero enables, positive integer values have no maximum tied to the challenge duration. `AttemptPrices` is a comma-separated sequence of non-negative whole ticket counts.
 - `MinPlayersRequired` is the minimum division size, `Players` the soft division limit and `PlayersHardLimit` the hard division limit. DisplayName and ChallengeDescription tooltips identify the localization keys used in the supplied example.

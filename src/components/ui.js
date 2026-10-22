@@ -24,11 +24,11 @@ export function Card({ children, className = "" }) {
   return `<div class="${cx("card", className)}">${children}</div>`;
 }
 
-export function CardHeader({ title, description = "", action = "" }) {
+export function CardHeader({ title, description = "", action = "", titleAddon = "" }) {
   return `
     <div class="section-head">
       <div>
-        <h2>${t(title)}</h2>
+        ${titleAddon ? `<div class="section-title-row"><h2>${t(title)}</h2>${titleAddon}</div>` : `<h2>${t(title)}</h2>`}
         ${description ? `<p class="helper">${description}</p>` : ""}
       </div>
       ${action}
@@ -62,27 +62,40 @@ export function Select({ value = "", options = [], className = "", attrs = "" })
   `;
 }
 
+// With `multiple`, `value` is an array: selected values render as removable chips, the text
+// input only searches, and a comma-joined hidden input carries the selection. Values missing
+// from `options` stay selected and are marked instead of being dropped.
 export function Combobox({ value = "", options = [], path, attrs = "", placeholder = "Search...", allowCustom = false,
-  toggleLabel = "", emptyLabel = "" }) {
+  toggleLabel = "", emptyLabel = "", debounce = 0, multiple = false }) {
+  const values = multiple ? (Array.isArray(value) ? value : []) : [value];
+  const isSelected = (option) => values.includes(option.value);
   const selected = options.find((option) => option.value === value);
-  const label = selected?.label || value;
+  const label = multiple ? "" : selected?.label || value;
   const listId = `combobox-${path.replaceAll(".", "-")}-list`;
   const resolvedToggleLabel = toggleLabel || (allowCustom ? "Open presets" : "Open list");
   const resolvedEmptyLabel = emptyLabel || (allowCustom ? "No matching presets." : "No matching options.");
-  return `
-    <div class="combobox" data-combobox ${allowCustom ? "data-allow-custom" : ""} data-selected-label="${escapeAttr(label)}">
-      <input class="input combobox-input" type="text" value="${escapeAttr(label)}"
+  const input = `<input class="${cx(!multiple && "input", "combobox-input")}" type="text" value="${escapeAttr(label)}"
         autocomplete="off" spellcheck="false" role="combobox" aria-autocomplete="list"
         aria-expanded="false" aria-controls="${listId}" data-combobox-input="${escapeAttr(path)}"
-        placeholder="${escapeAttr(t(placeholder))}" ${allowCustom ? `data-field="${escapeAttr(path)}"` : ""} ${attrs} />
+        placeholder="${escapeAttr(t(placeholder))}" ${allowCustom ? `data-field="${escapeAttr(path)}"` : ""} ${attrs} />`;
+  const chips = values.map((item) => {
+    const known = options.find((option) => option.value === item);
+    const name = known?.label || item;
+    return `<span class="${cx("combobox-chip", !known && "unknown")}" data-combobox-chip="${escapeAttr(item)}" ${known ? "" : `title="${escapeAttr(t("Not in the list; kept as entered."))}"`}>
+      ${escapeAttr(name)}<button class="combobox-chip-remove" type="button" data-combobox-remove="${escapeAttr(item)}" aria-label="${escapeAttr(t("Remove {name}", { name }))}">&times;</button>
+    </span>`;
+  }).join("");
+  return `
+    <div class="${cx("combobox", multiple && "combobox-multiple")}" data-combobox ${allowCustom ? "data-allow-custom" : ""} ${multiple ? "data-multiple" : ""} ${debounce ? `data-debounce="${Number(debounce)}"` : ""} data-selected-label="${escapeAttr(label)}">
+      ${multiple ? `<div class="combobox-control">${chips}${input}</div>` : input}
       <button class="combobox-toggle" type="button" data-combobox-toggle aria-label="${t(resolvedToggleLabel)}" tabindex="-1"></button>
-      ${allowCustom ? "" : `<input type="hidden" value="${escapeAttr(value)}" data-field="${escapeAttr(path)}" />`}
-      <div class="combobox-menu" id="${listId}" role="listbox" hidden>
+      ${allowCustom ? "" : `<input type="hidden" value="${escapeAttr(multiple ? values.join(",") : value)}" data-field="${escapeAttr(path)}" />`}
+      <div class="combobox-menu" id="${listId}" role="listbox" ${multiple ? 'aria-multiselectable="true"' : ""} hidden>
         ${options.map((option, index) => `
           <button class="combobox-option" id="${listId}-${index}" type="button" role="option"
-            aria-selected="${option.value === value}" data-combobox-option
+            aria-selected="${isSelected(option)}" data-combobox-option
             data-value="${escapeAttr(option.value)}" data-label="${escapeAttr(option.label)}">
-            <span>${escapeAttr(option.label)}</span><span class="combobox-check ${option.value === value ? "selected" : ""}" aria-hidden="true"></span>
+            <span>${escapeAttr(option.label)}</span><span class="combobox-check ${isSelected(option) ? "selected" : ""}" aria-hidden="true"></span>
           </button>
         `).join("")}
         <div class="combobox-empty" hidden>${t(resolvedEmptyLabel)}</div>

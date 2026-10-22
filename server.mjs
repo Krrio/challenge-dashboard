@@ -1,45 +1,25 @@
 import { createServer } from "node:http";
 import { randomUUID } from "node:crypto";
-import { readFile, writeFile, mkdir, rename } from "node:fs/promises";
+import { readFile } from "node:fs/promises";
 import { dirname, extname, resolve, relative, isAbsolute } from "node:path";
 import { fileURLToPath } from "node:url";
-import { createStore } from "./src/fixtures.js";
 import { validateChallenge, buildDiff, applyPlan } from "./src/domain.js";
 import { evaluatePack } from "./src/packs.js";
 import { buildDeletionPlan } from "./src/deletion.js";
+import { MockRepository } from "./src/repositories/mock.js";
 
 const root = dirname(fileURLToPath(import.meta.url));
 const delay = (ms) => new Promise((done) => setTimeout(done, ms));
 const httpError = (status, message) => Object.assign(new Error(message), { status });
 
-export async function createApp({ storePath = resolve(root, ".data/store.json"), runBuild = () => delay(1200), queueDelay = 450 } = {}) {
-  let store;
-  const persist = async (next) => {
-    await mkdir(dirname(storePath), { recursive: true });
-    const temporary = `${storePath}.${randomUUID()}.tmp`;
-    await writeFile(temporary, JSON.stringify(next, null, 2), "utf8");
-    await rename(temporary, storePath);
-    store = next;
-  };
-  try {
-    store = JSON.parse(await readFile(storePath, "utf8"));
-    if (!Number.isInteger(store.revision) || !Array.isArray(store.challenges) || !store.calendar || !Array.isArray(store.history) ||
-      (store.packs != null && !Array.isArray(store.packs))) {
-      throw new Error("Invalid local data store. Restore .data/store.json from a backup.");
-    }
-  } catch (error) {
-    if (error.code !== "ENOENT") throw error;
-    await persist(createStore());
-  }
-  store.packs ||= [];
-  const interrupted = store.history.filter((job) => ["Queued", "Running"].includes(job.status));
-  if (interrupted.length) {
-    interrupted.forEach((job) => {
-      job.status = "Failure";
-      job.log = "Server stopped before completion. No setup or calendar changes were committed.";
-    });
-    await persist(store);
-  }
+export async function createApp({ storePath = resolve(root, ".data/store.json"), runBuild = () => delay(1200), queueDelay = 450, repository = new MockRepository(storePath) } = {}) {
+  // The server depends on the ConfigRepository interface, not on a storage backend
+  // directly. MockRepository (local .data/store.json) is the default so no company
+  // credentials are required for local development; a GoogleSheetsRepository could
+  // be passed in here instead without changing anything below. See
+  // docs/sheet-driven-architecture.md.
+  let store = await repository.init();
+  const persist = async (next) => { store = await repository.persist(next); };
 
   const plans = new Map();
   let activeBuild = null;
@@ -96,6 +76,10 @@ export async function createApp({ storePath = resolve(root, ".data/store.json"),
       const url = new URL(req.url, authority);
       if (url.pathname.startsWith("/api/")) {
         if (req.method === "GET" && url.pathname === "/api/state") return json(res, 200, store);
+        // Normalized dependent-tab catalogs (bosses, presets, ...), sourced from the mock
+        // repository today; a GoogleSheetsRepository would answer the same shape from
+        // real rows. See docs/sheet-driven-architecture.md, section 6 and 9.
+        if (req.method === "GET" && url.pathname === "/api/references") return json(res, 200, await repository.getReferences());
         if (req.method !== "POST") throw httpError(405, "Method not allowed.");
         const input = await body(req);
         if (url.pathname === "/api/preview") {

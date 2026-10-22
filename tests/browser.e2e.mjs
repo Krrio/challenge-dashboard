@@ -40,6 +40,11 @@ async function session(t, viewport = { width: 1440, height: 1000 }, options = {}
 }
 const view = (page, name) => page.locator(`.nav [data-view="${name}"]`).click();
 const field = (page, path) => page.locator(`[data-field="${path}"]`);
+// Picks an option from a list-only combobox (ModeID, Arena, WavePreset, DropTier, ...).
+const choose = async (page, path, label) => {
+  await page.locator(`[data-combobox-input="${path}"]`).click();
+  await page.locator(`#combobox-${path.replaceAll(".", "-")}-list`).getByRole("option", { name: label, exact: true }).click();
+};
 const number = (page, path) => page.locator(`[data-number-field="${path}"]`);
 const notification = (page, title) => page.locator('[data-sonner-toast]:not([data-removed="true"])')
   .filter({ has: page.locator("[data-title]", { hasText: title }) });
@@ -52,26 +57,48 @@ test("spreadsheet sample works in the Polish dark form, reload, preview and STAG
   await field(page, "id").fill(spreadsheetChallenge.id);
   for (const [key, value] of Object.entries(spreadsheetChallenge.identity)) await field(page, `identity.${key}`).fill(value);
   for (const [key, value] of Object.entries(spreadsheetChallenge.eligibility)) await number(page, `eligibility.${key}`).fill(String(value));
-  await field(page, "content.modeId").selectOption("1");
-  await field(page, "content.modeId").selectOption("0");
+  await choose(page, "content.modeId", "1 - Last Stand");
+  await choose(page, "content.modeId", "0 - Regular challenge");
   await page.locator('[data-combobox-input="content.bossId"]').fill("Revenant");
   await page.getByRole("option", { name: "Revenant Assassin", exact: true }).click();
-  for (const key of ["arena", "wavePreset"]) await field(page, `content.${key}`).fill(spreadsheetChallenge.content[key]);
+  await choose(page, "content.arena", "Dark Temple");
+  await choose(page, "content.wavePreset", spreadsheetChallenge.content.wavePreset);
   for (const [key, value] of Object.entries(spreadsheetChallenge.timing)) await number(page, `timing.${key}`).fill(String(value));
-  for (const [key, value] of Object.entries(spreadsheetChallenge.rewards)) await field(page, `rewards.${key}`).fill(value);
+  assert.equal(await field(page, "rewards.dropTier").inputValue(), "DC_Level50", "DropTier follows the 50-59 bracket");
+  for (const [key, value] of Object.entries(spreadsheetChallenge.rewards)) {
+    if (key === "dropTier") await choose(page, "rewards.dropTier", value);
+    else await field(page, `rewards.${key}`).fill(value);
+  }
   for (const [key, value] of Object.entries(spreadsheetChallenge.players)) {
     await (key === "groupPreset" ? field(page, `players.${key}`) : number(page, `players.${key}`)).fill(String(value));
   }
-  for (const [key, value] of Object.entries(spreadsheetChallenge.visuals)) await field(page, `visuals.${key}`).fill(Array.isArray(value) ? value.join(",") : value);
+  for (const [key, value] of Object.entries(spreadsheetChallenge.visuals)) {
+    if (key !== "immuneIcons") {
+      await field(page, `visuals.${key}`).fill(value);
+      continue;
+    }
+    const icons = page.locator('[data-combobox]:has([data-combobox-input="visuals.immuneIcons"])');
+    while (await icons.locator("[data-combobox-remove]").count()) await icons.locator("[data-combobox-remove]").first().click();
+    for (const icon of value) {
+      await icons.locator("[data-combobox-input]").click();
+      await icons.getByRole("option", { name: icon, exact: true }).click();
+    }
+  }
   await page.locator("[data-advanced] summary").click();
   for (const [key, value] of Object.entries(spreadsheetChallenge.advanced)) {
     if (key === "separateLevels") continue;
+    if (key === "difficultyFactorPreset") {
+      await page.locator('[data-combobox-input="advanced.difficultyFactorPreset"]').fill(value);
+      await page.getByRole("option", { name: value, exact: true }).click();
+      continue;
+    }
     const input = typeof value === "number" ? number(page, `advanced.${key}`) : field(page, `advanced.${key}`);
     await input.fill(String(value).replace(".", ","));
   }
   await page.locator('[data-boolean-field="advanced.separateLevels"]').check();
   await page.locator('[data-boolean-field="advanced.separateLevels"]').uncheck();
   assert.equal(await page.locator('.checklist .dot.error').count(), 0);
+  await page.locator(".asset-reference").nth(1).waitFor();
   assert.equal(await page.locator(".asset-reference").count(), 2);
   assert.deepEqual(assetRequests, [], "Game asset keys are not fetched from the dashboard server");
   await page.locator('[data-action="save-draft"]').click();
@@ -111,24 +138,29 @@ test("spreadsheet sample works in the Polish dark form, reload, preview and STAG
 test("editable preset lists retain custom typing, keyboard choices and optional blanks", async (t) => {
   const { page } = await session(t);
   await view(page, "setup");
-  const arena = field(page, "content.arena");
-  await arena.fill("");
-  await arena.pressSequentially("MyCustomArena_V2");
-  assert.equal(await arena.inputValue(), "MyCustomArena_V2");
-  assert.equal(await arena.evaluate((input) => input === document.activeElement), true);
-  await arena.press("Enter");
-  await arena.press("Tab");
-  assert.equal(await arena.inputValue(), "MyCustomArena_V2");
-  await arena.fill("Dark");
-  await arena.press("ArrowDown");
-  await arena.press("Enter");
-  assert.equal(await arena.inputValue(), "DarkTemple");
-  assert.equal(await arena.getAttribute("aria-expanded"), "false");
   const reward = field(page, "rewards.rewardPreset");
+  await reward.fill("");
+  await reward.pressSequentially("MyCustomReward_V2");
+  assert.equal(await reward.inputValue(), "MyCustomReward_V2");
+  assert.equal(await reward.evaluate((input) => input === document.activeElement), true);
+  await reward.press("Enter");
+  await reward.press("Tab");
+  assert.equal(await reward.inputValue(), "MyCustomReward_V2");
   await reward.fill("ColdReward");
   await page.getByRole("option", { name: "ColdReward50_D3_V3", exact: true }).click();
   assert.equal(await reward.inputValue(), "ColdReward50_D3_V3");
-  await field(page, "rewards.dropTier").fill("DC_Level_Custom");
+  // List-only presets search instead of storing typed text; the keyboard picks the first match.
+  const arena = page.locator('[data-combobox-input="content.arena"]');
+  await arena.fill("grave");
+  await arena.press("ArrowDown");
+  await arena.press("Enter");
+  assert.equal(await field(page, "content.arena").inputValue(), "Graveyard");
+  assert.equal(await arena.getAttribute("aria-expanded"), "false");
+  await arena.fill("NotAnArena");
+  await arena.press("Escape");
+  assert.equal(await field(page, "content.arena").inputValue(), "Graveyard");
+  assert.equal(await arena.inputValue(), "Graveyard");
+  await choose(page, "rewards.dropTier", "DC_Level69");
   await field(page, "players.groupPreset").fill("");
   await page.locator("[data-advanced] summary").click();
   const window = number(page, "advanced.minutesLeftToUseHardLimit");
@@ -146,7 +178,7 @@ test("editable preset lists retain custom typing, keyboard choices and optional 
   await page.locator("[data-advanced] summary").click();
   assert.equal(await variance.inputValue(), "not-a-number");
   assert.equal(await field(page, "players.groupPreset").inputValue(), "");
-  assert.equal(await field(page, "rewards.dropTier").inputValue(), "DC_Level_Custom");
+  assert.equal(await field(page, "rewards.dropTier").inputValue(), "DC_Level69");
   assert.equal(await window.inputValue(), "");
 });
 
@@ -163,11 +195,13 @@ test("legacy mock modes remain visible and require an explicit choice without lo
   await page.reload();
   await page.waitForSelector(".workflow-controls");
   await view(page, "setup");
+  const mode = page.locator('[data-combobox-input="content.modeId"]');
   assert.equal(await field(page, "content.modeId").inputValue(), "BossRush");
-  assert.equal(await field(page, "content.modeId").getAttribute("aria-invalid"), "true");
+  assert.equal(await mode.inputValue(), "BossRush");
+  assert.equal(await mode.getAttribute("aria-invalid"), "true");
   assert.match(await page.locator(".checklist").innerText(), /Legacy mock modes require an explicit selection/);
-  await field(page, "content.modeId").selectOption("1");
-  assert.equal(await field(page, "content.modeId").getAttribute("aria-invalid"), "false");
+  await choose(page, "content.modeId", "1 - Last Stand");
+  assert.equal(await mode.getAttribute("aria-invalid"), "false");
   const draft = await page.evaluate(() => JSON.parse(localStorage.getItem("challenge-manager.workspace.v1")).editor.draft);
   assert.equal(draft.content.modeId, 1);
   assert.equal(draft.identity.displayName, "Retained old draft");
@@ -753,7 +787,7 @@ for (const listView of ["overview", "challenges"]) {
     await page.locator('[data-overview-filter="status"]').selectOption("Active");
     assert.equal(await rows.count(), 1);
     assert.equal(await rows.first().getAttribute("data-overview-row"), "ScarredOrcTest");
-    assert.equal(await page.locator(".overview-status-active").innerText(), "Active");
+    assert.equal(await page.locator(".overview-table .overview-status-active").innerText(), "Active");
   });
 
   test(`${listView} icon actions edit, schedule, copy and support keyboard dismissal`, async (t) => {
@@ -970,6 +1004,136 @@ test("BossID combobox filters names and updates only after selection", async (t)
   assert.equal(await input.inputValue(), "Dark Profanity");
 });
 
+test("EventGraphicURL lists known assets, filters once typing pauses and keeps custom values", async (t) => {
+  const { page } = await session(t);
+  await view(page, "setup");
+  const input = page.locator('[data-combobox-input="visuals.eventGraphicUrl"]');
+  const options = "#combobox-visuals-eventGraphicUrl-list [data-combobox-option]";
+  assert.equal(await page.locator(options).count(), 41);
+  await input.focus();
+  // A keystroke neither filters nor re-renders synchronously; the debounce applies both later.
+  const immediate = await input.evaluate((element, selector) => {
+    const root = element.closest("[data-combobox]");
+    element.value = "scarred orc";
+    element.dispatchEvent(new Event("input", { bubbles: true }));
+    return { visible: document.querySelectorAll(`${selector}:not([hidden])`).length, sameRoot: element.closest("[data-combobox]") === root && root.isConnected };
+  }, options);
+  assert.deepEqual(immediate, { visible: 41, sameRoot: true });
+  await page.waitForFunction((selector) => document.querySelectorAll(`${selector}:not([hidden])`).length === 3, options);
+  assert.deepEqual((await page.locator(`${options}:visible`).allTextContents()).map((text) => text.trim()),
+    ["challenge/ui_img_scarred_orc_1.png", "challenge/ui_img_scarred_orc_2.png", "challenge/ui_img_scarred_orc_3.png"]);
+  assert.equal(await input.evaluate((element) => document.activeElement === element), true);
+  await page.getByRole("option", { name: "challenge/ui_img_scarred_orc_2.png" }).click();
+  assert.equal(await input.inputValue(), "challenge/ui_img_scarred_orc_2.png");
+  assert.match(await page.locator(".asset-reference").first().innerText(), /ui_img_scarred_orc_2\.png/);
+  await input.fill("challenge/custom_event.png");
+  await input.press("Escape");
+  await page.waitForTimeout(400);
+  assert.equal(await input.inputValue(), "challenge/custom_event.png");
+  assert.equal(await input.getAttribute("aria-expanded"), "false");
+  assert.match(await page.locator(".asset-reference").first().innerText(), /custom_event\.png/);
+});
+
+test("new setups use agreed defaults, DropTier follows the bracket and Advanced fields keep focus while typing", async (t) => {
+  const { page } = await session(t);
+  await page.locator('[data-action="new-challenge"]').click();
+  assert.deepEqual(await Promise.all(["players.minRequired", "players.players", "players.hardLimit"].map((path) => number(page, path).inputValue())), ["15", "35", "50"]);
+  assert.equal(await field(page, "rewards.dropTier").inputValue(), "DC_Level30");
+  await page.locator(".brackets-trigger").hover();
+  assert.equal(await page.locator("#supported-brackets-help").isVisible(), true);
+  assert.deepEqual(await page.locator("#supported-brackets-help .bracket-list span").allTextContents(), ["15-19", "20-29", "30-39", "40-49", "50-59", "60-69", "70-90"]);
+  await number(page, "eligibility.minLevel").fill("60");
+  await number(page, "eligibility.maxLevel").fill("69");
+  assert.equal(await field(page, "rewards.dropTier").inputValue(), "DC_Level69");
+  await choose(page, "rewards.dropTier", "DC_Level60");
+  assert.equal(await field(page, "rewards.dropTier").inputValue(), "DC_Level60");
+  assert.equal(await page.locator("#combobox-content-wavePreset-list [data-combobox-option]").count(), 525);
+  assert.deepEqual(await page.locator("#combobox-content-arena-list [data-combobox-option]").evaluateAll((items) => items.map((item) => item.dataset.label)),
+    ["Forest", "Dark Temple", "Graveyard", "Cave", "Rockyfields"]);
+  await choose(page, "content.arena", "Dark Temple");
+  assert.equal(await field(page, "content.arena").inputValue(), "DarkTemple");
+  await page.locator("[data-advanced] summary").click();
+  const prices = field(page, "advanced.attemptPrices");
+  assert.equal(await prices.inputValue(), "1,1,2,3,4");
+  assert.equal(await number(page, "advanced.minutesLeftToUseHardLimit").inputValue(), "300");
+  await prices.fill("");
+  await prices.pressSequentially("2,2,3");
+  assert.equal(await prices.inputValue(), "2,2,3");
+  const inactive = number(page, "advanced.minutesInactive");
+  await inactive.fill("");
+  await inactive.pressSequentially("45");
+  assert.equal(await inactive.inputValue(), "45");
+  assert.equal(await inactive.evaluate((input) => input === document.activeElement), true);
+});
+
+test("ChallengeDescription suggests sheet localization keys and keeps custom text", async (t) => {
+  const { page } = await session(t);
+  await view(page, "setup");
+  const options = page.locator("#combobox-identity-description-list [data-combobox-option]");
+  assert.equal(await options.count(), 37);
+  const description = field(page, "identity.description");
+  await description.fill("razor clawed");
+  await page.waitForFunction(() => document.querySelectorAll("#combobox-identity-description-list [data-combobox-option]:not([hidden])").length === 1);
+  await page.getByRole("option", { name: "IDS_Razor-Clawed_Recluse_Description", exact: true }).click();
+  assert.equal(await description.inputValue(), "IDS_Razor-Clawed_Recluse_Description");
+  await description.fill("Custom description text");
+  await description.press("Escape");
+  await page.locator('[data-action="save-draft"]').click();
+  await page.reload();
+  await page.waitForSelector(".workflow-controls");
+  await view(page, "setup");
+  assert.equal(await field(page, "identity.description").inputValue(), "Custom description text");
+});
+
+test("BadgeBackgroundURL lists the known badge assets", async (t) => {
+  const { page } = await session(t);
+  await view(page, "setup");
+  const options = page.locator("#combobox-visuals-badgeBackgroundUrl-list [data-combobox-option]");
+  assert.equal(await options.count(), 41);
+  await page.locator('[data-combobox-input="visuals.badgeBackgroundUrl"]').fill("necrodaemon 3");
+  await page.waitForFunction(() => document.querySelectorAll("#combobox-visuals-badgeBackgroundUrl-list [data-combobox-option]:not([hidden])").length === 1);
+  await page.getByRole("option", { name: "challenge/badge_image_necrodaemon_3.png", exact: true }).click();
+  assert.equal(await field(page, "visuals.badgeBackgroundUrl").inputValue(), "challenge/badge_image_necrodaemon_3.png");
+});
+
+test("Immunity icons allow several selections, debounce the search and keep unknown legacy icons", async (t) => {
+  const { page } = await session(t);
+  await view(page, "setup");
+  const icons = page.locator('[data-combobox]:has([data-combobox-input="visuals.immuneIcons"])');
+  const input = icons.locator("[data-combobox-input]");
+  const value = icons.locator('[type="hidden"][data-field]');
+  const options = "#combobox-visuals-immuneIcons-list [data-combobox-option]";
+  // The fixture's legacy keys are not in the icon list; they stay selected and are marked.
+  assert.equal(await value.inputValue(), "bleed,stun");
+  assert.equal(await icons.locator(".combobox-chip.unknown").count(), 2);
+  await input.click();
+  assert.deepEqual(await page.locator(options).evaluateAll((items) => items.map((item) => item.dataset.value)), ["Physical", "Cold", "Fire", "Poison"]);
+  await icons.getByRole("option", { name: "Cold", exact: true }).click();
+  await icons.getByRole("option", { name: "Fire", exact: true }).click();
+  assert.equal(await value.inputValue(), "bleed,stun,Cold,Fire");
+  assert.equal(await page.locator("#combobox-visuals-immuneIcons-list").isVisible(), true, "The list stays open for further selections");
+  assert.equal(await icons.getByRole("option", { name: "Fire", exact: true }).getAttribute("aria-selected"), "true");
+  const immediate = await input.evaluate((element, selector) => {
+    element.value = "poi";
+    element.dispatchEvent(new Event("input", { bubbles: true }));
+    return document.querySelectorAll(`${selector}:not([hidden])`).length;
+  }, options);
+  assert.equal(immediate, 4);
+  await page.waitForFunction((selector) => document.querySelectorAll(`${selector}:not([hidden])`).length === 1, options);
+  await input.press("Enter");
+  assert.equal(await value.inputValue(), "bleed,stun,Cold,Fire,Poison");
+  assert.equal(await input.inputValue(), "poi");
+  await icons.getByRole("button", { name: "Remove bleed", exact: true }).click();
+  await input.fill("");
+  await input.press("Backspace");
+  assert.equal(await value.inputValue(), "stun,Cold,Fire");
+  await page.locator('[data-action="save-draft"]').click();
+  await page.reload();
+  await page.waitForSelector(".workflow-controls");
+  await view(page, "setup");
+  assert.equal(await page.locator('[type="hidden"][data-field="visuals.immuneIcons"]').inputValue(), "stun,Cold,Fire");
+});
+
 test("calendar challenge selection loads the matching setup and preserves an unfinished editor", async (t) => {
   const { page } = await session(t);
   await view(page, "setup");
@@ -1038,8 +1202,8 @@ test("refreshing during a new challenge deployment restores the committed identi
   await field(page, "id").fill("RefreshDuringDeploy");
   await field(page, "identity.displayName").fill("Reload test");
   await field(page, "identity.targetName").fill("Scarred Orc");
-  await field(page, "content.arena").fill("DarkTemple");
-  await field(page, "content.wavePreset").fill("BossOnly");
+  await choose(page, "content.arena", "Dark Temple");
+  await choose(page, "content.wavePreset", "ScarredOrc");
   await field(page, "rewards.rewardPreset").fill("CustomRewards");
   await page.locator('[data-action="preview"]').click();
   await page.waitForSelector("[data-review]");

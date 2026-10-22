@@ -223,15 +223,104 @@ export const defaultDifficultyFactorPresetByBracket = {
   "70-90": "70high_d3",
 };
 
+// DropTier filled in whenever the level bracket changes; the user can still pick another tier.
+export const defaultDropTierByBracket = {
+  "15-19": "DC_Level10",
+  "20-29": "DC_Level20",
+  "30-39": "DC_Level30",
+  "40-49": "DC_Level40",
+  "50-59": "DC_Level50",
+  "60-69": "DC_Level69",
+  "70-90": "DC_Level70",
+};
+
+// Distinct WavePreset keys from existing ChallengeSetupConfig rows, grouped as: the base preset per
+// boss or Last Stand arena, its _V1-_V5 and 70Diff1-3 variants, then the level/difficulty presets
+// that only ScarredOrc, OrkishOutcast and OrcChieftain have.
+const waveBosses = [
+  "ScarredOrc", "PoisonousOrc", "StoneSkinOrc", "OrkishOutcast", "BannedBrute", "CursedOrc", "OrcChieftain", "OrcBellwether",
+  "OrcWarmaster", "PosessedHound", "InfernalHound", "CrimsonHound", "RevenantAssassin", "ShadowStriker", "StealthAssassin",
+  "Necrodaemon", "ShackledBeast", "DeadlyHorns", "HunterOrc", "LethalInstinct", "MortalShadow", "Punisher", "SkullSmasher",
+  "Crusher", "RazorClawedRecluse", "KillerClaw", "WhiteTerror", "SavageLurker", "WildFang", "ForgottenMaw", "WalkingDesecration",
+  "BloodyDefiance", "DarkProfanity", "VileWizard", "NefariousWizard", "SoullessWizard",
+  "LastStand_Forest", "LastStand_RockyFields", "LastStand_DarkTemple", "LastStand_Graveyard", "LastStand_Cave",
+];
+const waveLevelPresets = (boss) => [
+  `${boss}15`, `${boss}20`,
+  ...[[30, ["d11", "d22", "d33"], 2], [40, ["d11", "d22", "d33"], 2], [50, ["d11", "d22", "d33"], 3], [60, ["d11", "d22", "d33"], 3],
+    [70, ["d11", "d22", "d33", "d44", "d55"], 4]]
+    .flatMap(([level, difficulties, variants]) => difficulties.flatMap((difficulty) =>
+      Array.from({ length: variants }, (_, index) => `${boss}${level}_${difficulty}_v${index + 1}`))),
+];
+const wavePresets = [
+  ...waveBosses,
+  ...["_V1", "_V2", "_V3", "_V4", "_V5", "70Diff1", "70Diff2", "70Diff3"].flatMap((suffix) => waveBosses.map((boss) => `${boss}${suffix}`)),
+  ...["ScarredOrc", "OrkishOutcast", "OrcChieftain"].flatMap(waveLevelPresets),
+];
+
 export const presets = {
   modes: [0, 1],
   bosses: [...bossOptions.map((option) => option.value), "FrostWarden", "EmberQueen", "IronGolem"],
-  arenas: ["DarkTemple", "RuinedKeep", "GlacierGate", "SunkenPit", "ForgeYard"],
-  waves: ["RevenantAssassin_V3", "Standard3", "Elite5", "BossOnly", "Endurance7"],
+  // Arena keys stay as stored in the sheet; only the label is spelled out for reading.
+  arenas: [
+    { value: "Forest", label: "Forest" }, { value: "DarkTemple", label: "Dark Temple" }, { value: "Graveyard", label: "Graveyard" },
+    { value: "Cave", label: "Cave" }, { value: "Rockyfields", label: "Rockyfields" },
+  ],
+  waves: wavePresets,
   rewards: ["ColdReward50_D3_V3", "BronzeStage", "SilverStage", "GoldStage", "MythicStage"],
   groups: ["Solo", "Duo", "Squad", "Guild"],
-  drops: ["DC_Level50", "T1", "T2", "T3", "T4"],
+  drops: ["DC_Level10", "DC_Level20", "DC_Level30", "DC_Level40", "DC_Level50", "DC_Level60", "DC_Level69", "DC_Level70"],
   difficultyFactors: difficultyFactorPresets,
+  // EventGraphicURL values used by existing ChallengeSetupConfig rows (boss portraits, then arena images).
+  eventGraphics: [
+    "challenge/ui_img_orc_chieftain_1.png", "challenge/ui_img_orc_chieftain_2.png", "challenge/ui_img_orc_chieftain_3.png",
+    "challenge/ui_img_orkish_outcast_1.png", "challenge/ui_img_orkish_outcast_2.png", "challenge/ui_img_orkish_outcast_3.png",
+    "challenge/ui_img_punisher_1.png", "challenge/ui_img_punisher_2.png", "challenge/ui_img_punisher_3.png",
+    "challenge/ui_img_vile_wizard_1.png", "challenge/ui_img_vile_wizard_2.png", "challenge/ui_img_vile_wizard_3.png",
+    "challenge/ui_img_scarred_orc_1.png", "challenge/ui_img_scarred_orc_2.png", "challenge/ui_img_scarred_orc_3.png",
+    "challenge/ui_image_savage_lurker_1.png", "challenge/ui_image_savage_lurker_2.png", "challenge/ui_image_savage_lurker_3.png",
+    "challenge/ui_img_possessed_hound_1.png", "challenge/ui_img_possessed_hound_2.png", "challenge/ui_img_possessed_hound_3.png",
+    "challenge/ui_img_hunter_orc_1.png", "challenge/ui_img_hunter_orc_2.png", "challenge/ui_img_hunter_orc_3.png",
+    "challenge/ui_img_necrodaemon_1.png", "challenge/ui_img_necrodaemon_2.png", "challenge/ui_img_necrodaemon_3.png",
+    "challenge/ui_img_revenant_assassin_1.png", "challenge/ui_img_revenant_assassin_2.png", "challenge/ui_img_revenant_assassin_3.png",
+    "challenge/ui_img_razor_clawed_recluse_1.png", "challenge/ui_img_razor_clawed_recluse_2.png", "challenge/ui_img_razor_clawed_recluse_3.png",
+    "challenge/ui_img_walking_desecration_1.png", "challenge/ui_img_walking_desecration_2.png", "challenge/ui_img_walking_desecration_3.png",
+    "challenge/ui_image_dark_temple.png", "challenge/ui_image_forest.png", "challenge/ui_image_rocky_fields.png",
+    "challenge/ui_image_graveyard.png", "challenge/ui_image_cave.png",
+  ],
+  // BadgeBackgroundURL values used by existing ChallengeSetupConfig rows (boss badges, then arena badges).
+  badgeBackgrounds: [
+    "challenge/badge_image_orc_chieftain_1.png", "challenge/badge_image_orc_chieftain_2.png", "challenge/badge_image_orc_chieftain_3.png",
+    "challenge/badge_image_orkish_outcast_1.png", "challenge/badge_image_orkish_outcast_2.png", "challenge/badge_image_orkish_outcast_3.png",
+    "challenge/badge_image_punisher_1.png", "challenge/badge_image_punisher_2.png", "challenge/badge_image_punisher_3.png",
+    "challenge/badge_image_vile_wizard_1.png", "challenge/badge_image_vile_wizard_2.png", "challenge/badge_image_vile_wizard_3.png",
+    "challenge/badge_image_scarred_orc_1.png", "challenge/badge_image_scarred_orc_2.png", "challenge/badge_image_scarred_orc_3.png",
+    "challenge/badge_image_savage_lurker_1.png", "challenge/badge_image_savage_lurker_2.png", "challenge/badge_image_savage_lurker_3.png",
+    "challenge/badge_image_possessed_hound_1.png", "challenge/badge_image_possessed_hound_2.png", "challenge/badge_image_possessed_hound_3.png",
+    "challenge/badge_image_hunter_orc_1.png", "challenge/badge_image_hunter_orc_2.png", "challenge/badge_image_hunter_orc_3.png",
+    "challenge/badge_image_necrodaemon_1.png", "challenge/badge_image_necrodaemon_2.png", "challenge/badge_image_necrodaemon_3.png",
+    "challenge/badge_image_revenant_assassin_1.png", "challenge/badge_image_revenant_assassin_2.png", "challenge/badge_image_revenant_assassin_3.png",
+    "challenge/badge_image_clawed_recluse_1.png", "challenge/badge_image_clawed_recluse_2.png", "challenge/badge_image_clawed_recluse_3.png",
+    "challenge/badge_image_walking_desecration_1.png", "challenge/badge_image_walking_desecration_2.png", "challenge/badge_image_walking_desecration_3.png",
+    "challenge/badge_image_dark_temple.png", "challenge/badge_image_forest.png", "challenge/badge_image_rocky_fields.png",
+    "challenge/badge_image_graveyard.png", "challenge/badge_image_cave.png",
+  ],
+  // Distinct ChallengeDescription localization keys from existing ChallengeSetupConfig rows, in boss
+  // roster order (as in WavePreset) with the Last Stand key last. The test value DominikTest1 is left out.
+  descriptions: [
+    "IDS_Scarred_Orc_Description", "IDS_Poisonous_Orc_Description", "IDS_Stone_Skin_Orc_Description", "IDS_Orkish_Outcast_Description",
+    "IDS_Banned_Brute_Description", "IDS_Cursed_Orc_Description", "IDS_Orc_Chieftain_Description", "IDS_Orc_Bellwether_Description",
+    "IDS_Orc_Warmaster_Description", "IDS_Possessed_Hound_Description", "IDS_Infernal_Hound_Description", "IDS_Crimson_Hound_Description",
+    "IDS_Revenant_Assassin_Description", "IDS_Shadow_Striker_Description", "IDS_Stealth_Assassin_Description", "IDS_Necrodaemon_Description",
+    "IDS_Shackled_Beast_Description", "IDS_Deadly_Horns_Description", "IDS_Hunter_Orc_Description", "IDS_Lethal_Instinct_Description",
+    "IDS_Mortal_Shadow_Description", "IDS_Punisher_Description", "IDS_Skull_Smasher_Description", "IDS_Crusher_Description",
+    "IDS_Razor-Clawed_Recluse_Description", "IDS_Killer_Claw_Description", "IDS_White_Terror_Description", "IDS_Savage_Lurker_Description",
+    "IDS_Wild_Fang_Description", "IDS_Forgotten_Maw_Description", "IDS_Walking_Desecration_Description", "IDS_Bloody_Defiance_Description",
+    "IDS_Dark_Profanity_Description", "IDS_Vile_Wizard_Description", "IDS_Nefarious_Wizard_Description", "IDS_Soulless_Wizard_Description",
+    "IDS_LS_Description",
+  ],
+  // ImmuneIconsInChallengeDescription keys; a challenge may list several.
+  immunityIcons: ["Physical", "Cold", "Fire", "Poison"],
 };
 
 const fixtureChallenges = [
