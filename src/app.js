@@ -1,6 +1,7 @@
 import { Alert, Badge, Button, Calendar, Card, CardContent, CardHeader, Combobox, Field, Input, Select, Table } from "./components/ui.js";
-import { bossOptions, brackets, presets, createStore, defaultDifficultyFactorPresetByBracket, defaultDropTierByBracket, difficultyFactorPresetData } from "./fixtures.js";
+import { brackets, createStore, defaultDifficultyFactorPresetByBracket, defaultDropTierByBracket } from "./fixtures.js";
 import { bossLabel, generatePack, evaluatePack } from "./packs.js";
+import { buildReferenceCatalog } from "./references.js";
 import { removePackMembers } from "./deletion.js";
 import { toast, notifyDeployment } from "./generated/notifications.js";
 import { t, message, locale } from "./i18n.js";
@@ -78,6 +79,12 @@ const fieldPlaceholders = {
 const app = document.querySelector("#app");
 const storageKey = "challenge-manager.workspace.v1";
 const today = new Date();
+// New schedules start at the moment they are created, expressed in UTC: 22.10.2026 14:07 in Poland
+// (CEST, UTC+2) becomes 2026-10-22 12:07.
+function currentUtcStart(now = new Date()) {
+  const iso = now.toISOString();
+  return { month: iso.slice(0, 7), day: now.getUTCDate(), startUtc: iso.slice(11, 16) };
+}
 const initialStore = createStore();
 const state = {
   view: "overview", month: today.toISOString().slice(0, 7),
@@ -87,7 +94,7 @@ const state = {
   },
   remote: initialStore, challenges: structuredClone(initialStore.challenges),
   selectedId: initialStore.challenges[0].id, draft: structuredClone(initialStore.challenges[0]),
-  schedule: { challengeId: initialStore.challenges[0].id, month: today.toISOString().slice(0, 7), day: today.getUTCDate(), startUtc: "19:00", levelBracket: "40-49" },
+  schedule: { challengeId: initialStore.challenges[0].id, ...currentUtcStart(today), levelBracket: "40-49" },
   savedDrafts: {}, savedScratch: {}, scratch: {}, reviewed: false, plan: null, previewLoading: false,
   pack: null, savedPacks: {}, packEdits: {}, singleEditor: null, packBossQuery: "", packCalendarMonth: "",
   deletionDialog: null, pendingRemoval: null,
@@ -104,9 +111,14 @@ let renderedPack = null;
 let deletionRequest = 0;
 
 function clone(value) { return structuredClone(value); }
+// The reference catalog (bosses, presets, pack presets, ...) every list, validation and pack reads.
+// It comes from GET /api/references; until that loads, the same mock catalog is built locally so
+// the editor behaves identically before and after the fetch resolves.
+const localReferences = buildReferenceCatalog();
+function catalog() { return state.references || localReferences; }
 function isBusy() { return state.submitting || ["Queued", "Running"].includes(state.deploy.status); }
 function originalId() { return !state.pack && state.remote.challenges.some((item) => item.id === state.selectedId) ? state.selectedId : ""; }
-function validationContext() { return { ...state.remote, originalId: originalId() }; }
+function validationContext() { return { ...state.remote, originalId: originalId(), references: catalog() }; }
 function validateChallenge() {
   if (state.pack) return packEvaluation().validation;
   return [
@@ -329,7 +341,7 @@ function newChallenge() {
   for (let number = 2; state.challenges.some((item) => item.id === id); number += 1) id = `NewStageChallenge${number}`;
   state.selectedId = "";
   state.draft = clone(state.scratch.__new__ || blankChallenge(id));
-  state.schedule = { challengeId: state.draft.id, month: state.month, day: state.schedule.day, startUtc: "19:00",
+  state.schedule = { challengeId: state.draft.id, ...currentUtcStart(),
     levelBracket: bracketForRange(state.draft.eligibility.minLevel, state.draft.eligibility.maxLevel) || "30-39" };
   invalidatePreview();
   state.view = "setup";
@@ -511,7 +523,7 @@ function cleanupDeletion({ challengeIds = [], packIds = [] }) {
   const emptyEditor = () => {
     const draft = clone(state.challenges[0] || blankChallenge());
     return { draft, selectedId: state.challenges[0]?.id || "", schedule: {
-      challengeId: draft.id, month: state.month, day: 1, startUtc: "19:00",
+      challengeId: draft.id, ...currentUtcStart(),
       levelBracket: bracketForRange(draft.eligibility.minLevel, draft.eligibility.maxLevel) || "30-39",
     } };
   };
@@ -647,7 +659,7 @@ function currentPack() {
 }
 
 function evaluateCurrentPack() {
-  const result = evaluatePack(state.remote, currentPack());
+  const result = evaluatePack(state.remote, currentPack(), { references: catalog() });
   for (const challenge of result.challenges) {
     if (state.savedDrafts[challenge.id] && !state.remote.challenges.some((item) => item.id === challenge.id)) {
       result.validation.push({ severity: "error", field: "pack.idPrefix", challengeId: challenge.id, text: "A local single-challenge draft already uses this ID." });
@@ -697,7 +709,7 @@ function leavePack() {
   } else {
     state.draft = clone(state.remote.challenges[0] || blankChallenge());
     state.selectedId = state.remote.challenges[0]?.id || "";
-    state.schedule = { challengeId: state.draft.id, month: state.month, day: 1, startUtc: "19:00",
+    state.schedule = { challengeId: state.draft.id, ...currentUtcStart(),
       levelBracket: bracketForRange(state.draft.eligibility.minLevel, state.draft.eligibility.maxLevel) || "40-49" };
   }
   invalidatePreview();
@@ -714,7 +726,7 @@ function newPack(sourceId = "") {
   const pack = {
     id: crypto.randomUUID(), name: source ? t("{name} copy", { name: source.name.slice(0, 110) }) : t("New boss pack"), idPrefix: prefix,
     namePattern: source?.namePattern || t("{boss} Trial"), bossIds: source ? [...source.bossIds] : [template.content.bossId], template,
-    schedule: { month: state.schedule.month, day: state.schedule.day, startUtc: state.schedule.startUtc || "19:00",
+    schedule: { ...currentUtcStart(),
       levelBracket: bracketForRange(template.eligibility.minLevel, template.eligibility.maxLevel) || "40-49", mode: "sequential", intervalDays: 1 },
   };
   state.packEdits[pack.id] = pack;
@@ -728,14 +740,37 @@ function packChanged() {
   render();
 }
 
+function presetPackButton(key) {
+  const empty = !catalog().packPresets[key].challenges.length;
+  return Button({ children: t(catalog().packPresets[key].name), attrs: `data-action="preset-pack" data-preset="${key}" ${empty ? `disabled title="${t("No challenges in this preset yet.")}"` : ""}` });
+}
+
 function renderPackContext() {
-  return `<div class="pack-context"><div><span class="pack-context-label">${t("Challenge pack")}</span><h2>${escapeHtml(state.pack.name || t("Untitled pack"))}</h2><span class="helper">${t("{count} challenges", { count: state.pack.bossIds.length })}</span></div><div class="toolbar-left">${Button({ children: t("All packs"), attrs: 'data-view="packs"' })}${Button({ children: t("Single challenge"), attrs: 'data-action="leave-pack"' })}</div></div>`;
+  return `<div class="pack-context"><div><span class="pack-context-label">${t("Challenge pack")}</span><h2>${escapeHtml(state.pack.name || t("Untitled pack"))}</h2><span class="helper">${t("{count} challenges", { count: state.pack.bossIds.length })}</span></div><div class="toolbar-left">${Button({ children: t("All packs"), attrs: 'data-view="packs"' })}${presetPackButton("regression")}${presetPackButton("rc")}${Button({ children: t("Single challenge"), attrs: 'data-action="leave-pack"' })}</div></div>`;
+}
+
+// Opens the pack built from a preset (Regression Pack, ...), creating it on first use. Its members
+// and their settings come from the catalog's packPresets; only the name and schedule are edited here.
+function openPresetPack(key) {
+  if (isBusy() || !catalog().packPresets[key]?.challenges.length) return;
+  const existing = allPacks().find((pack) => pack.preset === key);
+  if (existing) return openPack(existing.id);
+  const members = catalog().packPresets[key].challenges;
+  const first = members[0];
+  const pack = {
+    id: crypto.randomUUID(), name: catalog().packPresets[key].name, preset: key, idPrefix: catalog().packPresets[key].idPrefix, namePattern: "{boss}",
+    bossIds: members.map((challenge) => challenge.content.bossId), template: clone(first),
+    schedule: { ...currentUtcStart(),
+      levelBracket: bracketForRange(first.eligibility.minLevel, first.eligibility.maxLevel) || "40-49", mode: "simultaneous", intervalDays: 1 },
+  };
+  state.packEdits[pack.id] = pack;
+  openPack(pack.id);
 }
 
 function renderPacks() {
   const packs = allPacks();
   return `<section class="view">
-    <div class="toolbar challenges-toolbar">${Button({ children: `${overviewIcon("plus")}${t("New Pack")}`, variant: "primary", attrs: 'data-action="new-pack"' })}</div>
+    <div class="toolbar challenges-toolbar">${presetPackButton("regression")}${presetPackButton("rc")}${Button({ children: `${overviewIcon("plus")}${t("New Pack")}`, variant: "primary", attrs: 'data-action="new-pack"' })}</div>
     <section class="overview-challenges" aria-labelledby="packs-title">
       <div class="overview-table-toolbar"><h2 id="packs-title">${t("Challenge Packs")}</h2><span class="helper">${locale() === "pl-PL" ? t("{count} packs", { count: packs.length }) : `${packs.length} ${packs.length === 1 ? "pack" : "packs"}`}</span></div>
       <div class="overview-table-scroll" tabindex="0" role="region" aria-label="${t("Challenge packs table")}">
@@ -746,7 +781,7 @@ function renderPacks() {
           return `<tr data-pack-row="${escapeHtml(pack.id)}"><td class="overview-id">${escapeHtml(pack.name || t("Untitled pack"))}</td><td>${pack.bossIds.length}</td><td>${escapeHtml(pack.schedule.levelBracket)}</td><td>${escapeHtml(pack.schedule.month)}-${String(pack.schedule.day).padStart(2, "0")} ${escapeHtml(pack.schedule.startUtc)}</td><td><span class="overview-status ${deployed ? "overview-status-active" : "overview-status-draft"}"><span class="overview-status-dot" aria-hidden="true"></span>${t(deployed ? "Deployed" : "Local draft")}</span></td><td><div class="overview-row-actions">
             ${Button({ className: "overview-icon-button", children: overviewIcon("pencil"), attrs: `data-pack-open="${escapeHtml(pack.id)}" aria-label="${t("Edit {name}", { name: escapeHtml(pack.name) })}" title="${t("Edit pack")}"` })}
             ${Button({ className: "overview-icon-button", children: overviewIcon("calendar-days"), attrs: `data-pack-schedule="${escapeHtml(pack.id)}" aria-label="${t("Schedule {name}", { name: escapeHtml(pack.name) })}" title="${t("Schedule pack")}"` })}
-            ${Button({ className: "overview-icon-button", children: overviewIcon("copy"), attrs: `data-pack-copy="${escapeHtml(pack.id)}" aria-label="${t("Duplicate {name}", { name: escapeHtml(pack.name) })}" title="${t("Duplicate pack")}"` })}
+            ${pack.preset ? "" : Button({ className: "overview-icon-button", children: overviewIcon("copy"), attrs: `data-pack-copy="${escapeHtml(pack.id)}" aria-label="${t("Duplicate {name}", { name: escapeHtml(pack.name) })}" title="${t("Duplicate pack")}"` })}
             ${Button({ className: "overview-icon-button delete-icon-button", children: overviewIcon("trash-2"), attrs: `data-pack-delete="${escapeHtml(pack.id)}" aria-label="${t("Delete {name}", { name: escapeHtml(pack.name) })}" title="${t("Delete pack")}"` })}
           </div></td></tr>`;
         }).join("") || `<tr><td colspan="6" class="overview-empty">${t("No challenge packs yet.")}</td></tr>`}</tbody></table>
@@ -762,6 +797,12 @@ function packTextField(label, key, tooltip, readonly = false) {
 }
 
 function renderPackEditor() {
+  if (state.pack.preset) {
+    return section("Pack", t("Ready-made challenges with their own settings"), `<div class="form-grid">
+      ${packTextField("Pack name", "name", "Name of this pack.")}
+    </div><p class="helper">${t("Every challenge keeps the exact settings from the preset. Choose the start date and mode in Schedule Pack, then preview and push the whole pack to STAGE.")}</p>`)
+      + section("Challenges", t("{count} challenges", { count: state.pack.bossIds.length }), renderPackMembers(false));
+  }
   const query = state.packBossQuery.trim().toLowerCase();
   return section("Pack", t("Shared configuration"), `<div class="form-grid">
     ${packTextField("Pack name", "name", "Name of this reusable boss pack.")}
@@ -771,12 +812,12 @@ function renderPackEditor() {
     ${Input({ value: state.packBossQuery, attrs: `id="pack-boss-search" data-pack-search aria-label="${t("Search pack bosses")}" placeholder="${t("Search bosses...")}"` })}
     ${Button({ children: t("Select visible"), attrs: 'data-action="pack-select-visible"' })}
     ${Button({ children: t("Clear"), attrs: 'data-action="pack-clear-bosses"' })}
-    </div><div class="pack-boss-options">${bossOptions.map((boss) => `<label class="pack-boss-option" ${boss.label.toLowerCase().includes(query) ? "" : "hidden"}><input type="checkbox" data-pack-boss="${escapeHtml(boss.value)}" ${state.pack.bossIds.includes(boss.value) ? "checked" : ""} /><span>${escapeHtml(boss.label)}</span></label>`).join("")}</div>
+    </div><div class="pack-boss-options">${catalog().bosses.map((boss) => `<label class="pack-boss-option" ${boss.label.toLowerCase().includes(query) ? "" : "hidden"}><input type="checkbox" data-pack-boss="${escapeHtml(boss.value)}" ${state.pack.bossIds.includes(boss.value) ? "checked" : ""} /><span>${escapeHtml(boss.label)}</span></label>`).join("")}</div>
     <details class="pack-members" data-pack-members><summary>${t("Selected challenges ({count})", { count: state.pack.bossIds.length })}</summary>${renderPackMembers(true)}</details>`);
 }
 
-function renderPackMembers(reorder = false, members = generatePack(currentPack())) {
-  return `<div class="table-wrap"><table class="pack-member-table"><thead><tr>${["#", "Boss", "Challenge ID", "Name", "Start (UTC)", ...(reorder ? ["Order"] : [])].map((title) => `<th scope="col">${t(title)}</th>`).join("")}</tr></thead><tbody>${members.map(({ challenge, schedule }, index) => `<tr><td>${index + 1}</td><td>${escapeHtml(bossLabel(challenge.content.bossId))}</td><td>${escapeHtml(challenge.id)}</td><td>${escapeHtml(challenge.identity.displayName)}</td><td>${schedule.month ? `${schedule.month}-${String(schedule.day).padStart(2, "0")} ${escapeHtml(schedule.startUtc)}` : t("Invalid date")}</td>${reorder ? `<td><div class="toolbar-left">${Button({ children: overviewIcon("chevron-left"), className: "pack-order-up", attrs: `data-pack-order="${index}" data-direction="-1" title="${t("Move up")}" aria-label="${t("Move {name} up", { name: escapeHtml(bossLabel(challenge.content.bossId)) })}" ${index === 0 ? "disabled" : ""}` })}${Button({ children: overviewIcon("chevron-right"), className: "pack-order-down", attrs: `data-pack-order="${index}" data-direction="1" title="${t("Move down")}" aria-label="${t("Move {name} down", { name: escapeHtml(bossLabel(challenge.content.bossId)) })}" ${index === members.length - 1 ? "disabled" : ""}` })}</div></td>` : ""}</tr>`).join("") || `<tr><td colspan="${reorder ? 6 : 5}" class="empty-state">${t("No bosses selected.")}</td></tr>`}</tbody></table></div>`;
+function renderPackMembers(reorder = false, members = generatePack(currentPack(), catalog())) {
+  return `<div class="table-wrap"><table class="pack-member-table"><thead><tr>${["#", "Boss", "Challenge ID", "Name", "Start (UTC)", ...(reorder ? ["Order"] : [])].map((title) => `<th scope="col">${t(title)}</th>`).join("")}</tr></thead><tbody>${members.map(({ challenge, schedule }, index) => `<tr><td>${index + 1}</td><td>${escapeHtml(bossLabel(challenge.content.bossId, catalog()))}</td><td>${escapeHtml(challenge.id)}</td><td>${escapeHtml(challenge.identity.displayName)}</td><td>${schedule.month ? `${schedule.month}-${String(schedule.day).padStart(2, "0")} ${escapeHtml(schedule.startUtc)}` : t("Invalid date")}</td>${reorder ? `<td><div class="toolbar-left">${Button({ children: overviewIcon("chevron-left"), className: "pack-order-up", attrs: `data-pack-order="${index}" data-direction="-1" title="${t("Move up")}" aria-label="${t("Move {name} up", { name: escapeHtml(bossLabel(challenge.content.bossId, catalog())) })}" ${index === 0 ? "disabled" : ""}` })}${Button({ children: overviewIcon("chevron-right"), className: "pack-order-down", attrs: `data-pack-order="${index}" data-direction="1" title="${t("Move down")}" aria-label="${t("Move {name} down", { name: escapeHtml(bossLabel(challenge.content.bossId, catalog())) })}" ${index === members.length - 1 ? "disabled" : ""}` })}</div></td>` : ""}</tr>`).join("") || `<tr><td colspan="${reorder ? 6 : 5}" class="empty-state">${t("No bosses selected.")}</td></tr>`}</tbody></table></div>`;
 }
 
 function classForStatus(status) {
@@ -1115,7 +1156,7 @@ function renderScheduleChart(entries) {
 function renderBossUsage(entries) {
   const months = new Set(overviewMonths());
   const bossById = new Map([...state.challenges, ...state.remote.challenges].map((challenge) => [challenge.id, challenge.content.bossId]));
-  const bossName = (id) => (state.references?.bosses || bossOptions).find((boss) => boss.value === id)?.label || id;
+  const bossName = (id) => catalog().bosses.find((boss) => boss.value === id)?.label || id;
   const counts = new Map();
   for (const entry of entries) {
     if (!months.has(entry.month)) continue;
@@ -1276,7 +1317,7 @@ function renderChallengeList() {
   const now = Date.now();
   const matches = state.challenges.map((challenge) => ({ challenge, status: overviewStatus(challenge, entries, now) }))
     .filter((row) => {
-      const label = bossOptions.find((option) => option.value === row.challenge.content.bossId)?.label || "";
+      const label = catalog().bosses.find((option) => option.value === row.challenge.content.bossId)?.label || "";
       const text = [row.challenge.id, row.challenge.identity.displayName, row.challenge.content.bossId, label].join(" ").toLowerCase();
       return (!status || row.status === status) && (!boss || row.challenge.content.bossId === boss) && text.includes(normalizedQuery);
     });
@@ -1286,7 +1327,7 @@ function renderChallengeList() {
   list.page = page;
   const rows = matches.slice((page - 1) * pageSize, page * pageSize);
   const bossFilters = [...new Set(state.challenges.map((challenge) => challenge.content.bossId))]
-    .map((value) => ({ value, label: bossOptions.find((option) => option.value === value)?.label || value }))
+    .map((value) => ({ value, label: catalog().bosses.find((option) => option.value === value)?.label || value }))
     .sort((a, b) => a.label.localeCompare(b.label));
   const statuses = ["Active", "Scheduled", "Ready", "Draft", "Disabled"].map((value) => ({ value, label: t(value) }));
   const first = matches.length ? (page - 1) * pageSize + 1 : 0;
@@ -1386,7 +1427,7 @@ function renderChallenges() {
 }
 
 function challengeStatus(challenge) {
-  if (challenge.status === "Draft" || state.savedDrafts[challenge.id] || validateModel(challenge).some((item) => item.severity === "error")) return "Draft";
+  if (challenge.status === "Draft" || state.savedDrafts[challenge.id] || validateModel(challenge, null, { references: catalog() }).some((item) => item.severity === "error")) return "Draft";
   return nextStart(state.remote.calendar, challenge.id) ? "Scheduled" : "Ready";
 }
 
@@ -1396,14 +1437,16 @@ function renderSetup() {
       <div class="section-stack">
         ${state.pack ? renderPackContext() : ""}
         ${state.pack ? renderPackEditor() : ""}
-        ${renderIdentitySection()}
-        ${renderEligibilitySection()}
-        ${renderContentSection()}
-        ${renderTimingSection()}
-        ${renderRewardsSection()}
-        ${renderPlayersSection()}
-        ${renderVisualsSection()}
-        ${renderAdvancedSection()}
+        ${state.pack?.preset ? "" : html`
+          ${renderIdentitySection()}
+          ${renderEligibilitySection()}
+          ${renderContentSection()}
+          ${renderTimingSection()}
+          ${renderRewardsSection()}
+          ${renderPlayersSection()}
+          ${renderVisualsSection()}
+          ${renderAdvancedSection()}
+        `}
       </div>
       <aside class="rail">
         ${renderValidationCard()}
@@ -1465,8 +1508,8 @@ function renderContentSection() {
       <div class="form-grid">
         ${modeField()}
         ${!state.pack ? bossField() : ""}
-        ${presetField("Arena", "content.arena", state.draft.content.arena, optionsFor("arenas", presets.arenas), { listOnly: true })}
-        ${presetField("WavePreset", "content.wavePreset", state.draft.content.wavePreset, optionsFor("wavePresets", presets.waves), { listOnly: true })}
+        ${presetField("Arena", "content.arena", state.draft.content.arena, optionsFor("arenas"), { listOnly: true })}
+        ${presetField("WavePreset", "content.wavePreset", state.draft.content.wavePreset, optionsFor("wavePresets"), { listOnly: true })}
       </div>
     `,
   );
@@ -1492,8 +1535,8 @@ function renderRewardsSection() {
     t("Reward preset, drop tier and material variant"),
     html`
       <div class="form-grid">
-        ${presetField("RewardPreset", "rewards.rewardPreset", state.draft.rewards.rewardPreset, optionsFor("rewardPresets", presets.rewards))}
-        ${presetField("DropTier", "rewards.dropTier", state.draft.rewards.dropTier, optionsFor("dropTiers", presets.drops), { listOnly: true })}
+        ${presetField("RewardPreset", "rewards.rewardPreset", state.draft.rewards.rewardPreset, optionsFor("rewardPresets"))}
+        ${presetField("DropTier", "rewards.dropTier", state.draft.rewards.dropTier, optionsFor("dropTiers"), { listOnly: true })}
         ${textField("MaterialDropVariant", "rewards.materialDropVariant", state.draft.rewards.materialDropVariant)}
       </div>
     `,
@@ -1506,7 +1549,7 @@ function renderPlayersSection() {
     t("Group preset and participation limits"),
     html`
       <div class="form-grid">
-        ${presetField("PlayersGroupPreset", "players.groupPreset", state.draft.players.groupPreset, optionsFor("playerGroupPresets", presets.groups))}
+        ${presetField("PlayersGroupPreset", "players.groupPreset", state.draft.players.groupPreset, optionsFor("playerGroupPresets"))}
         ${numberField("MinPlayersRequired", "players.minRequired", state.draft.players.minRequired)}
         ${numberField("Players", "players.players", state.draft.players.players)}
         ${numberField("PlayersHardLimit", "players.hardLimit", state.draft.players.hardLimit)}
@@ -1576,14 +1619,8 @@ function numberField(label, path, value, helper = "") {
   });
 }
 
-// Reads a normalized catalog from GET /api/references when it has loaded; falls back
-// to the static fixtures.js list otherwise, so the field behaves identically before
-// and after that fetch resolves. `fallbackValues` may be plain config-key strings or
-// already-shaped { value, label } entries (e.g. bossOptions).
-function optionsFor(catalogKey, fallbackValues) {
-  const catalog = state.references?.[catalogKey];
-  if (catalog) return catalog.map(({ value, label }) => ({ value, label }));
-  return fallbackValues.map((entry) => (typeof entry === "object" ? entry : { value: entry, label: entry }));
+function optionsFor(catalogKey) {
+  return (catalog()[catalogKey] || []).map(({ value, label }) => ({ value, label }));
 }
 
 // `listOnly` presets accept only catalog values: typing searches the list (debounced) instead of
@@ -1604,7 +1641,7 @@ function descriptionField() {
     full: true,
     control: Combobox({
       value: state.draft.identity.description || "",
-      options: optionsFor("challengeDescriptions", presets.descriptions),
+      options: optionsFor("challengeDescriptions"),
       path,
       attrs: fieldAttributes(path),
       placeholder: placeholderFor(path),
@@ -1636,7 +1673,7 @@ function bossField() {
     ...fieldOptions("BossID", path),
     control: Combobox({
       value: state.draft.content.bossId,
-      options: optionsFor("bosses", bossOptions),
+      options: optionsFor("bosses"),
       path,
       attrs: fieldAttributes(path),
       placeholder: "Search boss...",
@@ -1651,7 +1688,7 @@ function difficultyFactorPresetField() {
     ...fieldOptions("Difficulty Factor Preset", path),
     control: Combobox({
       value: state.draft.advanced.difficultyFactorPreset || "",
-      options: optionsFor("difficultyPresets", presets.difficultyFactors),
+      options: optionsFor("difficultyPresets"),
       path,
       attrs: fieldAttributes(path),
       placeholder: "Search preset...",
@@ -1668,7 +1705,7 @@ function assetPathField(label, key, catalogKey) {
     ...fieldOptions(label, path),
     control: Combobox({
       value: state.draft.visuals[key] || "",
-      options: optionsFor(catalogKey, presets[catalogKey]),
+      options: optionsFor(catalogKey),
       path,
       attrs: fieldAttributes(path),
       placeholder: "Search or enter a path...",
@@ -1686,7 +1723,7 @@ function immunityIconsField() {
     ...fieldOptions("Immunity Icons", path),
     control: Combobox({
       value: state.draft.visuals.immuneIcons || [],
-      options: optionsFor("immunityIcons", presets.immunityIcons),
+      options: optionsFor("immunityIcons"),
       path,
       attrs: fieldAttributes(path),
       placeholder: "Search icons...",
@@ -1702,7 +1739,7 @@ function difficultyFactorPresetDetails() {
   // Prefer the value carried by the reference catalog entry (matches the sheet-driven
   // architecture: the display data travels with the selected reference) and fall back
   // to the static fixtures.js table before /api/references has loaded.
-  const row = state.references?.difficultyPresets?.find((entry) => entry.value === name)?.details || difficultyFactorPresetData[name];
+  const row = catalog().difficultyPresets.find((entry) => entry.value === name)?.details;
   if (!row) {
     return `<p class="helper">${t("Select a Difficulty Factor Preset to see its ChallengeDifficultyFactorPresets values.")}</p>`;
   }
@@ -1809,7 +1846,7 @@ function renderCalendar() {
               ${state.pack ? selectPackField() : selectChallengeField()}
               ${dateScheduleField()}
               ${textScheduleField("Start UTC", "startUtc", state.schedule.startUtc)}
-              ${selectScheduleField("Level Bracket", "levelBracket", state.schedule.levelBracket, brackets)}
+              ${state.pack?.preset ? "" : selectScheduleField("Level Bracket", "levelBracket", state.schedule.levelBracket, brackets)}
               ${state.pack ? renderPackScheduleFields() : ""}
               ${Button({ children: t("Preview Changes"), variant: "primary", attrs: 'data-action="preview"' })}
             </div>
@@ -1831,7 +1868,7 @@ function formatScheduleDate() {
 function renderCalendarGrid() {
   const month = state.pack ? state.packCalendarMonth : state.schedule.month;
   const days = monthDays(month);
-  const pending = state.pack ? generatePack(currentPack()).filter((member) => member.schedule.month === month) : [];
+  const pending = state.pack ? generatePack(currentPack(), catalog()).filter((member) => member.schedule.month === month) : [];
   let cells = `<div class="cal-head">${t("Day")}</div>${brackets.map((bracket) => `<div class="cal-head">${bracket}</div>`).join("")}`;
   for (let day = 1; day <= days; day += 1) {
     cells += `<div class="cal-day">${day}</div>`;
@@ -1886,7 +1923,7 @@ function renderPackScheduleFields() {
   return `<fieldset class="pack-schedule-mode"><legend>${t("Schedule")}</legend><div class="segmented-control">
     ${[ ["sequential", "Sequential"], ["simultaneous", "Same time"] ].map(([value, label]) => `<label><input type="radio" name="pack-mode" data-pack-mode value="${value}" ${state.schedule.mode === value ? "checked" : ""} /><span>${t(label)}</span></label>`).join("")}
     </div></fieldset>${state.schedule.mode === "sequential" ? Field({ label: "Interval (days)", id: "pack-interval", control: Input({ type: "number", value: state.schedule.intervalDays, attrs: 'id="pack-interval" data-schedule="intervalDays" min="1" max="366" step="1"' }) }) : ""}
-    ${Button({ children: t("Edit shared setup"), attrs: 'data-view="setup"' })}`;
+    ${Button({ children: t(state.pack.preset ? "View pack challenges" : "Edit shared setup"), attrs: 'data-view="setup"' })}`;
 }
 
 function dateScheduleField() {
@@ -1925,7 +1962,7 @@ function renderPreview() {
     <section class="preview-layout">
       <div class="section-stack">
         ${state.pack ? renderPackContext() : ""}
-        ${state.pack ? section("Pack schedule", `${t("{count} challenges", { count: state.pack.bossIds.length })}`, renderPackMembers(false, state.plan?.members || generatePack(currentPack()))) : ""}
+        ${state.pack ? section("Pack schedule", `${t("{count} challenges", { count: state.pack.bossIds.length })}`, renderPackMembers(false, state.plan?.members || generatePack(currentPack(), catalog()))) : ""}
         ${!hasChanges ? Alert({ children: t("No changes to deploy.") }) : ""}
         ${state.previewLoading ? Alert({ children: t("Preparing server preview...") }) : ""}
         ${errors ? Alert({ variant: "red", children: t("Blocking validation issues must be resolved before STAGE deploy.") }) : ""}
@@ -2008,6 +2045,28 @@ function renderDeployStatus() {
       <strong>${t("Log:")}</strong> ${escapeHtml(message(state.deploy.log || "Available after queueing"))}
       `,
     })}
+    ${renderImportDetails(state.remote.history.find((job) => job.id === state.deploy.build))}
+  `;
+}
+
+// What a deployment wrote to the spreadsheet and the STAGE import build it ran for each UTC month.
+function renderImportDetails(job) {
+  if (!job?.writes && !job?.builds?.length) return "";
+  const status = (build) => build.status === "SUCCESS" ? ["overview-status-active", "Success"] : ["overview-status-disabled", "Failure"];
+  return html`
+    <div class="import-details">
+      ${job.writes ? `<p class="helper">${t("Spreadsheet: {rows} rows, {cells} calendar cells, {packs} packs written", job.writes)}</p>` : ""}
+      ${job.builds?.length ? html`
+        <ul class="import-list" aria-label="${t("STAGE imports")}">
+          ${job.builds.map((build) => {
+            const [tone, label] = status(build);
+            return `<li><span class="overview-status ${tone}"><span class="overview-status-dot" aria-hidden="true"></span>${t(label)}</span>
+              <span>${t("UTC {month} · build #{number}", { month: `${escapeHtml(build.parameters.UTC_YEAR)}-${escapeHtml(build.parameters.UTC_MONTH)}`, number: build.number })}${build.rollback ? ` · ${t("re-import after rollback")}` : ""}</span>
+              <code>${Object.entries(build.parameters).map(([key, value]) => `${escapeHtml(key)}=${escapeHtml(value)}`).join(" ")}</code></li>`;
+          }).join("")}
+        </ul>
+      ` : ""}
+    </div>
   `;
 }
 
@@ -2029,7 +2088,7 @@ function renderHistory() {
                   <td>${escapeHtml(item.packName || item.challengeId)}${item.deletion ? `<div class="helper">${t("Deletion: {count} challenges", { count: item.deletion.challengeCount })}</div>` : item.packId ? `<div class="helper">${t("{count} challenges", { count: item.challengeIds.length })}</div>` : ""}</td>
                   <td><span class="overview-status ${item.status === "Success" ? "overview-status-active" : item.status === "Failure" ? "overview-status-disabled" : "overview-status-ready"}"><span class="overview-status-dot" aria-hidden="true"></span>${t(item.status)}</span></td>
                   <td>${escapeHtml(item.time)}</td>
-                  <td><details><summary>${t("Build details")}</summary><p class="helper">${escapeHtml(t(item.initiator || "Local user"))}</p><p>${escapeHtml(message(item.log || "Historical fixture"))}</p>${item.packId ? `<p>${item.challengeIds.map(escapeHtml).join(", ")}</p>` : ""}${item.diff ? diffList([...item.diff.setup, ...item.diff.calendar, ...(item.diff.pack || [])]) : ""}</details></td>
+                  <td><details><summary>${t("Build details")}</summary><p class="helper">${escapeHtml(t(item.initiator || "Local user"))}</p><p>${escapeHtml(message(item.log || "Historical fixture"))}</p>${renderImportDetails(item)}${item.packId ? `<p>${item.challengeIds.map(escapeHtml).join(", ")}</p>` : ""}${item.diff ? diffList([...item.diff.setup, ...item.diff.calendar, ...(item.diff.pack || [])]) : ""}</details></td>
                 </tr>
               `,
             ),
@@ -2425,10 +2484,11 @@ function bindEvents() {
     if (data.packSchedule) return openPack(data.packSchedule, "calendar");
     if (data.packCopy) return newPack(data.packCopy);
     if (data.action === "new-pack") return newPack();
+    if (data.action === "preset-pack") return openPresetPack(data.preset);
     if (data.action === "leave-pack") { leavePack(); return setView("setup"); }
     if (state.pack && data.action === "pack-clear-bosses") { state.pack.bossIds = []; return packChanged(); }
     if (state.pack && data.action === "pack-select-visible") {
-      const visible = bossOptions.filter((boss) => boss.label.toLowerCase().includes(state.packBossQuery.trim().toLowerCase())).map((boss) => boss.value);
+      const visible = catalog().bosses.filter((boss) => boss.label.toLowerCase().includes(state.packBossQuery.trim().toLowerCase())).map((boss) => boss.value);
       state.pack.bossIds = [...new Set([...state.pack.bossIds, ...visible])];
       return packChanged();
     }

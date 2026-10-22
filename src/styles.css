@@ -2207,6 +2207,33 @@ summary {
 
 }
 
+/* Spreadsheet writes and STAGE import builds of a deployment */
+.import-details { display: grid; gap: 8px; margin-top: 10px; }
+.import-details .helper { margin: 0; }
+
+.import-list {
+  display: grid;
+  gap: 6px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.import-list li {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 4px 10px;
+  font-size: 13px;
+}
+
+.import-list code {
+  flex-basis: 100%;
+  color: var(--muted);
+  font-size: 11.5px;
+  overflow-wrap: anywhere;
+}
+
 /* Overview dashboard */
 .overview-dashboard .btn.primary { background: var(--accent); }
 .overview-dashboard .btn.primary:hover { background: var(--accent-strong); }

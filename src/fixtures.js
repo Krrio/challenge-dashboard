@@ -1,4 +1,4 @@
-export const brackets = ["15-19", "20-29", "30-39", "40-49", "50-59", "60-69", "70-90"];
+export { brackets } from "./domain.js";
 
 const bossNames = [
   "Scarred Orc",
@@ -259,7 +259,6 @@ const wavePresets = [
 ];
 
 export const presets = {
-  modes: [0, 1],
   bosses: [...bossOptions.map((option) => option.value), "FrostWarden", "EmberQueen", "IronGolem"],
   // Arena keys stay as stored in the sheet; only the label is spelled out for reading.
   arenas: [

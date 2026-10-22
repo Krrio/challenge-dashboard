@@ -5,9 +5,15 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createStore, bossOptions } from "../src/fixtures.js";
 import { applyPlan, calendarEntries } from "../src/domain.js";
-import { evaluatePack, generatePack } from "../src/packs.js";
+import { evaluatePack as evaluateWith, generatePack as generateWith } from "../src/packs.js";
+import { buildReferenceCatalog } from "../src/references.js";
 import { buildDeletionPlan } from "../src/deletion.js";
 import { createApp } from "../server.mjs";
+
+// Packs read bosses and pack presets from the repository reference catalog; tests use the mock catalog.
+const references = buildReferenceCatalog();
+const evaluatePack = (store, input, options = {}) => evaluateWith(store, input, { references, ...options });
+const generatePack = (pack) => generateWith(pack, references);
 
 function packedStore() {
   const store = createStore();
@@ -80,8 +86,9 @@ async function harness(t, options = {}) {
 
 test("deletion uses the confirmed snapshot, is atomic and invalidates stale create/delete previews", async (t) => {
   let finish;
+  let started = false;
   const gate = new Promise((resolve) => { finish = resolve; });
-  const h = await harness(t, { runBuild: () => gate });
+  const h = await harness(t, { runBuild: () => { started = true; return gate; } });
   const before = (await h.request("/api/state")).body;
   const id = before.challenges[0].id;
   const create = (await h.request("/api/preview", { challenge: before.challenges[0], originalId: id,
@@ -94,10 +101,12 @@ test("deletion uses the confirmed snapshot, is atomic and invalidates stale crea
     const accepted = await h.request("/api/deploy", { target: "stage", previewId: plan.id,
       deletion: { kind: "pack", id: "test-pack", includeChallenges: true } });
     assert.equal(accepted.status, 202);
+    while (!started) await new Promise((resolve) => setTimeout(resolve, 5));
+    // The confirmed single-challenge deletion is in the sheet while STAGE imports it.
     const pending = (await h.request("/api/state")).body;
-    assert.deepEqual(pending.challenges, before.challenges);
-    assert.deepEqual(pending.calendar, before.calendar);
-    assert.deepEqual(pending.packs, before.packs);
+    assert.equal(pending.challenges.some((challenge) => challenge.id === id), false);
+    assert.equal(pending.packs.length, 1);
+    assert.equal(pending.history[0].phase, "importing");
     assert.equal((await h.request("/api/deploy", { target: "stage", previewId: stale.id })).status, 409);
   } finally { finish(); await h.waitForIdle(); }
   const after = (await h.request("/api/state")).body;
@@ -120,7 +129,7 @@ test("failed deletion keeps all challenges, packs and calendar entries intact", 
   assert.deepEqual(after.challenges, before.challenges);
   assert.deepEqual(after.calendar, before.calendar);
   assert.deepEqual(after.packs, before.packs);
-  assert.equal(after.revision, before.revision);
+  assert.equal(after.revision, before.revision + 2, "One write and one rollback");
   assert.equal(after.history[0].status, "Failure");
   assert.deepEqual(after.history.slice(1), before.history);
 });

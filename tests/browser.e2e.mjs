@@ -1066,6 +1066,55 @@ test("new setups use agreed defaults, DropTier follows the bracket and Advanced 
   assert.equal(await inactive.evaluate((input) => input === document.activeElement), true);
 });
 
+test("new challenges and packs start at the moment they are created, in UTC", async (t) => {
+  const { page } = await session(t);
+  // 14:07 in Poland (CEST, UTC+2) on 22.10.2026.
+  await page.clock.setFixedTime(new Date("2026-10-22T12:07:30Z"));
+  const schedule = () => page.evaluate(() => {
+    const { month, day, startUtc } = JSON.parse(localStorage.getItem("challenge-manager.workspace.v1")).editor.schedule;
+    return { month, day, startUtc };
+  });
+  await page.locator('[data-action="new-challenge"]').click();
+  assert.deepEqual(await schedule(), { month: "2026-10", day: 22, startUtc: "12:07" });
+  await view(page, "calendar");
+  assert.equal(await page.locator('[data-schedule="startUtc"]').inputValue(), "12:07");
+  await view(page, "packs");
+  await page.locator('[data-action="new-pack"]').click();
+  assert.deepEqual(await schedule(), { month: "2026-10", day: 22, startUtc: "12:07" });
+});
+
+test("Regression Pack creates the 45 sheet challenges with one click and RC Pack stays empty", async (t) => {
+  const { page, url } = await session(t);
+  await view(page, "packs");
+  const regression = page.locator('[data-action="preset-pack"][data-preset="regression"]');
+  assert.equal(await page.locator('[data-action="preset-pack"][data-preset="rc"]').isDisabled(), true);
+  await regression.click();
+  const context = page.locator(".pack-context");
+  assert.match(await context.innerText(), /Regression Pack/);
+  assert.match(await context.innerText(), /45 challenges/);
+  assert.equal(await page.locator('[data-action="preset-pack"][data-preset="rc"]').isDisabled(), true);
+  assert.equal(await page.locator(".pack-member-table tbody tr").count(), 45);
+  assert.equal(await page.locator('[data-field="identity.displayName"]').count(), 0, "Preset members keep their own setups");
+  await regression.click();
+  await page.locator('[data-action="save-draft"]').click();
+  await view(page, "packs");
+  assert.equal(await page.locator("[data-pack-row]").filter({ hasText: "Regression Pack" }).count(), 1, "A second click reopens the same pack");
+  await page.locator("[data-pack-row]").filter({ hasText: "Regression Pack" }).locator("[data-pack-open]").click();
+  await page.locator('[data-action="preview"]').click();
+  await page.waitForSelector("[data-review]");
+  assert.match(await page.locator('label:has([data-review])').innerText(), /45 challenges/);
+  await page.locator("[data-review]").check();
+  await page.locator('[data-action="deploy"]').click();
+  await page.waitForFunction(() => document.querySelector(".deploy-step.active")?.textContent === "Success", null, { timeout: 15000 });
+  const imports = await page.locator(".import-details").innerText();
+  assert.match(imports, /45 rows, 1 calendar cells, 1 packs written/);
+  assert.match(imports, /UTC 2026-09 · build #1/);
+  assert.match(imports, /SPREADSHEET_ID=\S+ UTC_YEAR=2026 UTC_MONTH=09 IMPORTER_TYPE=challenge/);
+  const store = await (await page.request.get(`${url}/api/state`)).json();
+  assert.equal(store.challenges.filter((challenge) => /^CheckReg\d+$/.test(challenge.id)).length, 45);
+  assert.equal(store.packs.find((pack) => pack.preset === "regression")?.challengeIds.length, 45);
+});
+
 test("ChallengeDescription suggests sheet localization keys and keeps custom text", async (t) => {
   const { page } = await session(t);
   await view(page, "setup");

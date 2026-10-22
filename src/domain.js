@@ -1,4 +1,8 @@
-import { brackets, presets } from "./fixtures.js";
+// ChallengeCalendar level-bracket columns. They describe the sheet layout rather than a reference
+// catalog, so they live with the domain rules; fixtures.js re-exports them for the mock seed.
+export const brackets = ["15-19", "20-29", "30-39", "40-49", "50-59", "60-69", "70-90"];
+// ModeID values the game understands: 0 regular challenge ending with a boss, 1 Last Stand.
+export const modeIds = [0, 1];
 
 export function monthDays(month) {
   if (!/^\d{4}-(0[1-9]|1[0-2])$/.test(month)) return 0;
@@ -126,10 +130,13 @@ export function validateChallenge(challenge, schedule = null, context = {}) {
   for (const path of ["identity.description", "rewards.materialDropVariant", "advanced.difficultyFactorPreset", "advanced.attemptPrices"]) {
     if (valueAt(path) != null && typeof valueAt(path) !== "string") add("error", path, "This value must be text.");
   }
-  if (!presets.modes.includes(valueAt("content.modeId"))) {
+  if (!modeIds.includes(valueAt("content.modeId"))) {
     add("error", "content.modeId", "Select ModeID 0 (regular challenge) or 1 (Last Stand). Legacy mock modes require an explicit selection.");
   }
-  if (!presets.bosses.includes(valueAt("content.bossId"))) add("error", "content.bossId", "bossId must use a known preset.");
+  // Known bosses come from the repository's reference catalog, never from local fixtures.
+  const bosses = context.references?.bosses;
+  if (!Array.isArray(bosses)) throw new Error("validateChallenge needs context.references from the repository.");
+  if (!bosses.some((boss) => boss.value === valueAt("content.bossId"))) add("error", "content.bossId", "bossId must use a known preset.");
   // The PDF provides examples, not exhaustive catalogs of external config keys.
   for (const [path, optional] of [
     ["content.arena", false], ["content.wavePreset", false], ["rewards.rewardPreset", false],

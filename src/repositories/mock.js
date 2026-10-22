@@ -1,27 +1,33 @@
-// Local/mock ConfigRepository: the exact behavior server.mjs used to inline
-// (atomic JSON writes to .data/store.json, interrupted-build recovery on startup).
-// This is the default repository for local development and tests, so no company
-// credentials are required to work on UI/domain behavior. See
-// docs/sheet-driven-architecture.md, "Phase 1 - Create interfaces without changing
-// behavior".
+// Local/mock ConfigRepository: keeps the "spreadsheet" (setups, calendar, packs) and the dashboard
+// audit history in .data/store.json. It applies the same targeted row/cell changes a
+// GoogleSheetsRepository would write, with the same optimistic-concurrency check, so no company
+// credentials are needed to work on UI, domain or deployment behavior. Each write replaces the
+// file atomically. See docs/sheet-driven-architecture.md.
 import { randomUUID } from "node:crypto";
 import { readFile, writeFile, mkdir, rename } from "node:fs/promises";
 import { dirname } from "node:path";
 import { createStore } from "../fixtures.js";
 import { buildReferenceCatalog } from "../references.js";
+import { applyChanges as applySheetChanges } from "../sheet-changes.js";
 import { ConfigRepository } from "./config-repository.js";
 
 export class MockRepository extends ConfigRepository {
   #storePath;
+  #spreadsheetId;
   #store = null;
 
-  constructor(storePath) {
+  constructor(storePath, { spreadsheetId = process.env.SPREADSHEET_ID || "mock-spreadsheet" } = {}) {
     super();
     this.#storePath = storePath;
+    this.#spreadsheetId = spreadsheetId;
   }
 
   get state() {
     return this.#store;
+  }
+
+  get spreadsheetId() {
+    return this.#spreadsheetId;
   }
 
   async init() {
@@ -34,17 +40,9 @@ export class MockRepository extends ConfigRepository {
       this.#store = parsed;
     } catch (error) {
       if (error.code !== "ENOENT") throw error;
-      await this.persist(createStore());
+      await this.#write(createStore());
     }
     this.#store.packs ||= [];
-    const interrupted = this.#store.history.filter((job) => ["Queued", "Running"].includes(job.status));
-    if (interrupted.length) {
-      interrupted.forEach((job) => {
-        job.status = "Failure";
-        job.log = "Server stopped before completion. No setup or calendar changes were committed.";
-      });
-      await this.persist(this.#store);
-    }
     return this.#store;
   }
 
@@ -52,7 +50,20 @@ export class MockRepository extends ConfigRepository {
     return buildReferenceCatalog();
   }
 
-  async persist(nextState) {
+  async applyChanges(changes) {
+    return this.#write(applySheetChanges(this.#store, changes));
+  }
+
+  async saveJob(job, metadata = {}) {
+    const next = structuredClone(this.#store);
+    const index = next.history.findIndex((item) => item.id === job.id);
+    if (index < 0) next.history.unshift(structuredClone(job));
+    else next.history[index] = structuredClone(job);
+    Object.assign(next, metadata);
+    return this.#write(next);
+  }
+
+  async #write(nextState) {
     await mkdir(dirname(this.#storePath), { recursive: true });
     const temporary = `${this.#storePath}.${randomUUID()}.tmp`;
     await writeFile(temporary, JSON.stringify(nextState, null, 2), "utf8");

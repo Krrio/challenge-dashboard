@@ -3,7 +3,12 @@ import assert from "node:assert/strict";
 import { bossOptions, createStore } from "../src/fixtures.js";
 import { isAssetPath, parseDecimalInput } from "../src/domain.js";
 import { spreadsheetChallenge, spreadsheetRow } from "./fixtures/spreadsheet.mjs";
-import { validateChallenge, buildDiff, appendEntry, applyPlan, nextStart, monthDays, setupRow, identityErrors } from "../src/domain.js";
+import { validateChallenge as validateWith, buildDiff, appendEntry, applyPlan, nextStart, monthDays, setupRow, identityErrors } from "../src/domain.js";
+import { buildReferenceCatalog } from "../src/references.js";
+
+// Validation reads known bosses from the repository reference catalog; tests use the mock catalog.
+const references = buildReferenceCatalog();
+const validateChallenge = (challenge, schedule = null, context = {}) => validateWith(challenge, schedule, { references, ...context });
 
 const fixture = () => {
   const store = createStore();

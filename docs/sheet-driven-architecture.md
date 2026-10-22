@@ -114,6 +114,8 @@ class GoogleSheetsRepository extends ConfigRepository { ... }
 The server and domain code depend on `ConfigRepository`, not on `.data/store.json` or Google APIs directly. This keeps local development and test behavior intact.
 
 > **Implemented (Phase 1):** `src/repositories/config-repository.js` defines this contract; `src/repositories/mock.js` implements it as `MockRepository`, wrapping the exact local-store behavior `server.mjs` used to inline. `server.mjs` takes a `repository` (defaulting to `MockRepository`) instead of touching the filesystem directly. A `GoogleSheetsRepository` does not exist yet — see the confirmation checklist in section 14 before building one.
+>
+> **Implemented (Phase 1b):** the contract no longer persists a whole state snapshot. It is `init()`, `state`, `spreadsheetId`, `getReferences()`, `applyChanges(changes)` and `saveJob(job)`. `applyChanges` receives targeted `ChallengeSetupConfig` row, `ChallengeCalendar` cell and pack changes (`src/sheet-changes.js`), each with the value it expects to replace, and writes nothing if any target changed since the preview (HTTP 409). That is the shape a Sheets adapter needs: a values batch update guarded by a re-read of the same ranges.
 
 ## 6. Reference Catalog
 
@@ -137,6 +139,8 @@ ReferenceCatalog
 - Reference fetching should be cacheable with a visible last-synced timestamp and a manual refresh action.
 
 > **Implemented (Phase 1):** `src/references.js` builds exactly this shape (`{ value, label, sourceTab, sourceKey }` per entry, plus `syncedAt`) from `src/fixtures.js` today, served via `GET /api/references`. `src/app.js`'s preset fields (`BossID`, `Arena`, `WavePreset`, `RewardPreset`, `DropTier`, `PlayersGroupPreset`, `DifficultyFactorPreset`) read from that catalog when it has loaded and fall back to the static fixtures otherwise, so the UI behaves identically before and after the fetch resolves.
+>
+> **Implemented (Phase 1b):** validation (`validateChallenge`, via `context.references`) and packs (`evaluatePack`/`generatePack`) no longer import `src/fixtures.js`; they receive the catalog from the caller. The server passes `repository.getReferences()`, so a boss or pack preset served by a future Sheets repository is accepted without code changes. The catalog also carries the ready-made pack presets (Regression Pack, RC Pack).
 
 ## 7. How this changes the existing Setup UI
 
@@ -221,6 +225,10 @@ Challenge Manager server
 STAGE
 ```
 
+**Known parameters:** the STAGE job takes `SPREADSHEET_ID`, `UTC_YEAR`, `UTC_MONTH` and `IMPORTER_TYPE` (only `challenge`) and imports one UTC month from the spreadsheet. That settles the ordering: write the sheet first, then run one import per affected month (every month with a changed calendar cell, plus current and future months that schedule a changed setup).
+
+> **Implemented (Phase 1b, mock):** `src/integrations/jenkins.js` builds these parameters and `MockJenkins` stands in for the job. A deployment writes the approved rows and cells, then imports each month in order. If an import fails, the written rows and cells are rolled back and months already imported are imported again from the restored sheet. A deployment interrupted by a restart is rolled back on startup. Every build and its parameters are recorded in the audit history. Whether the team prefers rollback or a retry of the failed import still needs confirmation (section 14).
+
 - Keep the existing server-side hard rejection of non-stage targets.
 - Use a dedicated service account/token with the minimum permission required to trigger/read the one STAGE job.
 - Expose friendly build states in the existing UI; keep raw Jenkins URL/log as secondary detail.
@@ -245,6 +253,8 @@ STAGE
 
 **Phase 1 — Create interfaces without changing behavior.** Wrap the current local store and fixture catalogs behind `MockRepository` / `ReferenceCatalog`. Keep every existing test green. No Google credentials yet. ✅ **Done** — see sections 5 and 6.
 
+**Phase 1b — Prepare for the real adapters without credentials.** Targeted row/cell writes with optimistic concurrency, validation and packs driven by the repository catalog, a Jenkins mock with the real parameters (one build per UTC month), rollback and restart recovery. ✅ **Done.**
+
 **Phase 2 — Reference reads only.** Implement a Google Sheets read adapter for selected dependent tabs. Enrich `/api/references`. Drive `RewardPreset`, `WavePreset`, `Arena`, `BossID` and other selects from live normalized rows. No real writes. *(Blocked on the section 14 checklist — no real spreadsheet ID/credentials exist yet.)*
 
 **Phase 3 — Cross-sheet validation.** Pass the live reference snapshot into preview validation. Add resolved/unresolved/invalid statuses and contextual preview cards. Preserve existing free-form behavior where required.
@@ -264,8 +274,8 @@ STAGE
 - Whether references are unique by one key or require composite keys/aliases.
 - Exact `ChallengeCalendar` serialization and delimiter rules in the real sheet. The local mock currently uses `HH:mm:ChallengeID` and its own separator.
 - How month/year are represented in the real `ChallengeCalendar` workbook and whether one sheet is rotated/reused monthly.
-- Jenkins job name, parameters, authentication method, crumb requirements and expected build result API.
-- Real deployment ordering and rollback behavior if a Sheet write succeeds but Jenkins fails (or vice versa).
+- Jenkins job URL, authentication method, crumb requirements and expected build result API. Parameters are known (`SPREADSHEET_ID`, `UTC_YEAR`, `UTC_MONTH`, `IMPORTER_TYPE=challenge`); confirm the `UTC_MONTH` format (the mock sends two digits, e.g. `09`) and whether builds for several months may run in parallel.
+- Ordering is settled (sheet first, then one import per month). Still open: when an import fails, should the sheet be rolled back (current behavior) or kept and the import retried?
 - Concurrency expectations: one operator at a time vs. multiple people editing the same workbook.
 - Whether Google Sheets should be accessed via user OAuth or a server service account.
 - Which warnings should block deploy in production-like use versus remain warnings.
@@ -298,6 +308,8 @@ None of this is guessed at in the current code — Phase 2+ is blocked until the
 - [x] No production target can be requested from the server.
 - [x] No Google or Jenkins secret is present in client-delivered JavaScript (none exist yet).
 - [x] The next step (real setup/calendar writes) can be implemented by swapping repository methods, not by rewriting the UI.
+- [x] Writes are targeted row/cell changes with a before-value check; deployments write the sheet first and run one import build per UTC month with the real Jenkins parameters (mocked).
+- [x] Validation and packs read bosses and pack presets from the repository catalog, not from `src/fixtures.js`.
 
 ---
 

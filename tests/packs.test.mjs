@@ -5,9 +5,16 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createApp } from "../server.mjs";
 import { bossOptions, createStore } from "../src/fixtures.js";
-import { evaluatePack, generatePack } from "../src/packs.js";
+import { evaluatePack as evaluateWith, generatePack as generateWith } from "../src/packs.js";
+import { buildReferenceCatalog } from "../src/references.js";
+import { packPresets } from "../src/pack-presets.js";
 import { applyPlan, calendarEntries, setupRow } from "../src/domain.js";
 import { spreadsheetChallenge, spreadsheetRow } from "./fixtures/spreadsheet.mjs";
+
+// Packs read bosses and pack presets from the repository reference catalog; tests use the mock catalog.
+const references = buildReferenceCatalog();
+const evaluatePack = (store, input, options = {}) => evaluateWith(store, input, { references, ...options });
+const generatePack = (pack) => generateWith(pack, references);
 
 const makePack = () => ({
   id: "pack-thirty", name: "Thirty bosses", idPrefix: "Thirty", namePattern: "{boss} Trial {index}",
@@ -131,10 +138,11 @@ async function harness(t, options = {}) {
   return { ...app, request, storePath };
 }
 
-test("batch deploy commits the immutable reviewed 30-member pack in a single transaction", async (t) => {
+test("batch deploy writes the reviewed 30-member pack in one write and imports each month once", async (t) => {
   let finish;
+  let started = false;
   const gate = new Promise((resolve) => { finish = resolve; });
-  const h = await harness(t, { runBuild: () => gate });
+  const h = await harness(t, { runBuild: () => { started = true; return gate; } });
   const before = (await h.request("/api/state")).body;
   const pack = makePack();
   const preview = await h.request("/api/preview", { pack });
@@ -146,16 +154,21 @@ test("batch deploy commits the immutable reviewed 30-member pack in a single tra
     const job = await h.request("/api/deploy", { target: "stage", previewId: preview.body.id, pack });
     assert.equal(job.status, 202);
     assert.equal(job.body.challengeIds.length, 30);
+    while (!started) await new Promise((resolve) => setTimeout(resolve, 5));
+    // The whole reviewed pack is in the sheet before the first import starts; the edited payload is ignored.
     const during = (await h.request("/api/state")).body;
-    assert.deepEqual(during.challenges, before.challenges);
-    assert.deepEqual(during.calendar, before.calendar);
-    assert.equal(during.packs?.length || 0, 0);
+    assert.equal(during.challenges.length, before.challenges.length + 30);
+    assert.equal(during.challenges.at(-1).timing.durationHours, 24);
+    assert.equal(during.packs.length, 1);
+    assert.deepEqual(during.history[0].months, ["2028-02", "2028-03"]);
     assert.equal((await h.request("/api/deploy", { target: "stage", previewId: stale.id })).status, 409);
   } finally { finish(); await h.waitForIdle(); }
   const committed = (await h.request("/api/state")).body;
   assert.equal(committed.challenges.length, 33);
   assert.equal(committed.challenges.at(-1).timing.durationHours, 24);
   assert.equal(committed.revision, 1);
+  assert.deepEqual(committed.history[0].builds.map((build) => [build.parameters.UTC_YEAR, build.parameters.UTC_MONTH, build.status]),
+    [["2028", "02", "SUCCESS"], ["2028", "03", "SUCCESS"]]);
   assert.equal(committed.history[0].packName, "Thirty bosses");
   assert.equal(committed.history[0].status, "Success");
   assert.deepEqual(JSON.parse(await readFile(h.storePath, "utf8")), committed);
@@ -177,6 +190,59 @@ test("invalid and failed batches leave all setups, calendars and pack definition
   assert.deepEqual(failed.challenges, before.challenges);
   assert.deepEqual(failed.calendar, before.calendar);
   assert.equal(failed.packs?.length || 0, 0);
-  assert.equal(failed.revision, 0);
+  assert.equal(failed.revision, 2, "One write and one rollback");
   assert.equal(failed.history[0].status, "Failure");
+});
+
+test("when a later month fails, the sheet is rolled back and earlier months are imported again", async (t) => {
+  const h = await harness(t, { runBuild: async (_plan, parameters) => {
+    if (parameters.UTC_MONTH === "03") throw new Error("March import failed");
+  } });
+  const before = (await h.request("/api/state")).body;
+  const plan = (await h.request("/api/preview", { pack: makePack() })).body;
+  await h.request("/api/deploy", { target: "stage", previewId: plan.id });
+  await h.waitForIdle();
+  const failed = (await h.request("/api/state")).body;
+  assert.deepEqual(failed.challenges, before.challenges);
+  assert.deepEqual(failed.calendar, before.calendar);
+  assert.equal(failed.packs.length, 0);
+  assert.deepEqual(failed.history[0].builds.map((build) => [build.parameters.UTC_MONTH, build.status, Boolean(build.rollback)]),
+    [["02", "SUCCESS", false], ["03", "FAILURE", false], ["02", "SUCCESS", true]]);
+  assert.match(failed.history[0].log, /March import failed.*rolled back and 2028-02 imported again/);
+});
+
+test("Regression Pack uses the 45 sheet rows exactly and ignores client-supplied members", () => {
+  const regression = packPresets.regression.challenges;
+  assert.equal(regression.length, 45);
+  assert.deepEqual(regression.map((challenge) => challenge.id), Array.from({ length: 45 }, (_, index) => `CheckReg${index + 1}`));
+  assert.deepEqual(setupRow(regression[0]), {
+    CompetitionID: "CheckReg1", CompetitionGroup: "regChallenge", "Min Level": 60, "Max Level": 69, "Min CP": 0, "Max CP": 2650000000,
+    ModeID: 0, BossID: "OrcChieftain", DisplayName: "Swarm6_70_D5_v4", TargetName: "Orc Chieftain",
+    ChallengeDescription: "IDS_Orc_Chieftain_Description", EventGraphicURL: "challenge/ui_img_orc_chieftain_1.png",
+    ImmuneIconsInChallengeDescription: "Physical", BadgeBackgroundURL: "challenge/badge_image_orc_chieftain_1.png",
+    RewardPreset: "FireReward60", Arena: "Rockyfields", WavePreset: "OrcChieftain70_D55_v4", "Duration (h)": 24, "AttemptDuration(s)": 480,
+    TimerPerWave: "", AttemptPrices: "1,1,2,3,4", NpcLevelMultiplier: 1, PlayersGroupPreset: "", MinPlayersRequired: 5, Players: 25,
+    PlayersHardLimit: 40, MinutesInactive: 60, MinInactivePlayers: 0, MaxInactivePlayers: 0, SeparateLevels: 0, MinNpcLevelVariance: 0.9,
+    MaxNpcLevelVariance: 1.1, DropTier: "DC_Level69", MaterialDropVariant: "16", PositionRankingMultiplier: 1.6,
+    RankingScoreMultiplier: 1.1913651058504537, DifficultyFactorPreset: "60low_d1", MinutesLeftToUseHardLimit: 360,
+  });
+  assert.deepEqual(regression[2].visuals.immuneIcons, ["Physical", "Poison"]);
+
+  const pack = {
+    id: "regression-pack", name: "Regression Pack", preset: "regression", idPrefix: "Injected", namePattern: "", bossIds: ["Injected"],
+    template: structuredClone(regression[0]),
+    schedule: { month: "2028-02", day: 10, startUtc: "19:00", levelBracket: "40-49", mode: "simultaneous", intervalDays: 1 },
+  };
+  const plan = evaluatePack(createStore(), pack);
+  assert.deepEqual(blocking(plan), []);
+  assert.equal(plan.challenges.length, 45);
+  assert.deepEqual(plan.challenges.map(setupRow), regression.map(setupRow));
+  assert.ok(plan.schedules.every((schedule) => schedule.levelBracket === "60-69" && schedule.day === 10));
+  assert.equal(plan.pack.idPrefix, "CheckReg");
+  assert.equal(plan.pack.preset, "regression");
+  assert.equal(plan.pack.bossIds.length, 45);
+  assert.deepEqual(plan.diff.pack.find((row) => row.field === "Challenges"), { field: "Challenges", oldValue: "(new pack)", newValue: 45 });
+
+  assert.deepEqual(blocking(evaluatePack(createStore(), { ...pack, preset: "rc" })).map((item) => item.text), ["This preset pack has no challenges yet."]);
+  assert.ok(blocking(evaluatePack(createStore(), { ...pack, preset: "__proto__" })).some((item) => item.text === "Unknown pack preset."));
 });

@@ -22,6 +22,11 @@ export function message(text, language = locale()) {
     [/^(.*) Reconnecting to check deployment status\.$/, (error) => t("{error} Reconnecting to check deployment status.", { error: message(error, language) }, language)],
     [/^(.+) has no setup configuration\. Its calendar entry will be preserved\.$/, (id) => t("{id} has no setup configuration. Its calendar entry will be preserved.", { id }, language)],
     [/^Deployment failed: (.*)\. Setup and calendar changes were not committed\.$/, (error) => t("Deployment failed: {error}. Setup and calendar changes were not committed.", { error }, language)],
+    [/^Spreadsheet updated\. Running the STAGE import for (.+)\.$/, (months) => t("Spreadsheet updated. Running the STAGE import for {months}.", { months }, language)],
+    [/^Deployment failed: (.*)\. The spreadsheet was not changed\.$/, (error) => t("Deployment failed: {error}. The spreadsheet was not changed.", { error }, language)],
+    [/^Deployment failed: (.*)\. The approved rows and cells were rolled back and (.+) imported again\.$/, (error, months) => t("Deployment failed: {error}. The approved rows and cells were rolled back and {months} imported again.", { error, months }, language)],
+    [/^Deployment failed: (.*)\. The approved rows and cells were rolled back\.$/, (error) => t("Deployment failed: {error}. The approved rows and cells were rolled back.", { error }, language)],
+    [/^Server stopped during the deployment\. The approved rows and cells were rolled back\. Run the STAGE import again for (.+)\.$/, (months) => t("Server stopped during the deployment. The approved rows and cells were rolled back. Run the STAGE import again for {months}.", { months }, language)],
   ];
   for (const [pattern, translate] of patterns) {
     const match = text.match(pattern);

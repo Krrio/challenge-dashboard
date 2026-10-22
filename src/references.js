@@ -3,10 +3,11 @@
 // came from. Each entry keeps its source tab and source key so the UI can explain
 // where a value came from, per the sheet-driven architecture spec (docs/sheet-driven-architecture.md).
 //
-// In mock mode every catalog is built from src/fixtures.js. A future
-// GoogleSheetsRepository would build the same shape from real sheet rows instead;
-// nothing downstream needs to change to accept that.
+// In mock mode every catalog is built from src/fixtures.js and src/pack-presets.js. A future
+// GoogleSheetsRepository would build the same shape from real sheet rows instead; validation
+// (domain.js) and packs (packs.js) only ever receive this catalog, so nothing downstream changes.
 import { bossOptions, presets, difficultyFactorPresetData } from "./fixtures.js";
+import { packPresets } from "./pack-presets.js";
 
 function entries(values, { sourceTab, label } = {}) {
   return values.map((value) => ({
@@ -19,7 +20,8 @@ function entries(values, { sourceTab, label } = {}) {
 
 export function buildReferenceCatalog() {
   return {
-    bosses: bossOptions.map(({ value, label }) => ({ value, label, sourceTab: "BossConfig", sourceKey: value })),
+    // Every boss the validation accepts, including the legacy mock bosses that have no display name.
+    bosses: presets.bosses.map((value) => ({ value, label: bossOptions.find((boss) => boss.value === value)?.label || value, sourceTab: "BossConfig", sourceKey: value })),
     arenas: presets.arenas.map(({ value, label }) => ({ value, label, sourceTab: "ArenaConfig", sourceKey: value })),
     wavePresets: entries(presets.waves, { sourceTab: "WavePresetsConfig" }),
     rewardPresets: entries(presets.rewards, { sourceTab: "ChallengeRewardsConfig" }),
@@ -33,6 +35,8 @@ export function buildReferenceCatalog() {
     badgeBackgrounds: entries(presets.badgeBackgrounds, { sourceTab: "ChallengeSetupConfig" }),
     immunityIcons: entries(presets.immunityIcons, { sourceTab: "ChallengeSetupConfig" }),
     challengeDescriptions: entries(presets.descriptions, { sourceTab: "ChallengeSetupConfig" }),
+    // Ready-made packs (Regression Pack, RC Pack) with their complete member setups.
+    packPresets: structuredClone(packPresets),
     syncedAt: new Date().toISOString(),
   };
 }

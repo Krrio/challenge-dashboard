@@ -9,7 +9,7 @@
     "dev": "node server.mjs",
     "prestart": "npm run build",
     "start": "node server.mjs",
-    "test": "node --test tests/domain.test.mjs tests/server.test.mjs tests/packs.test.mjs tests/deletion.test.mjs tests/i18n.test.mjs",
+    "test": "node --test tests/domain.test.mjs tests/server.test.mjs tests/packs.test.mjs tests/deletion.test.mjs tests/sheet-changes.test.mjs tests/i18n.test.mjs",
     "pretest:browser": "npm run build",
     "test:browser": "node --test tests/browser.e2e.mjs"
   },
